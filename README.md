@@ -1,27 +1,29 @@
 # AuroraDotNet
 
-A completely new, independent Minecraft Java Edition server engine built from scratch in C# / .NET.
+AuroraDotNet is a high-performance, experimental Minecraft server implementation written entirely in C# (.NET 9.0). It aims to support the Minecraft 1.21.4 (Protocol 768) specification, leveraging modern .NET features like `System.IO.Pipelines`, `ReadOnlySequence`, and zero-allocation parsing for network efficiency.
 
-## Overview
-AuroraDotNet is a multi-threaded, cross-platform Minecraft server implementation focusing on:
-1. Complete independence from Bukkit, Paper, Spigot, Fabric, Forge, etc.
-2. Concurrent world simulation using a region-based ownership model.
-3. Decoupling of the Minecraft network protocol from the game engine.
-4. Minimal locks and lock-free execution where practical.
+## Features
+- **Protocol Support:** Currently targets Minecraft 1.21.4.
+- **High Performance I/O:** Built on top of `System.IO.Pipelines` for high throughput and low memory footprint.
+- **Strict Configuration State Flow:** Fully handles the modern Minecraft `Configuration` network state (Feature Flags, Known Packs, Registry Data).
+- **Extensible Architecture:** Clear separation of concerns between `Network`, `Protocol`, `Core`, and `World` modules.
 
-## Current State
-This project is in its absolute infancy (Phase 1: Foundation).
-Currently, the foundational types are being established.
+## Getting Started
 
-## Repository Structure
-- `src/`: Core implementation modules (Core, Networking, World, Server, etc.)
-- `tests/`: Automated unit and integration tests.
-- `benchmarks/`: BenchmarkDotNet performance test suites.
-- `docs/`: Architecture documentation and ADRs.
-- `tools/`: Utility scripts and development tooling.
+1. Ensure you have the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0) installed.
+2. Build the project:
+   ```bash
+   dotnet build -c Release
+   ```
+3. Run the server:
+   ```bash
+   dotnet run --project src/Aurora.Bootstrap -c Release
+   ```
 
-## Building
-```bash
-dotnet build
-dotnet test
-```
+## Next Steps / Roadmap
+- **Vanilla Registry NBT Sync:** The server requires a proper `minecraft:dimension_type` and `minecraft:worldgen/biome` NBT dump from a vanilla 1.21.4 server to fully transition the client to the Play state.
+- **World & Chunk Generation:** Implement standard Anvil chunk loading and terrain generation.
+- **Entity & Physics Engine:** Server-side bounding boxes and movement validation.
+
+## License
+MIT License
