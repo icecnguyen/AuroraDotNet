@@ -45,6 +45,12 @@
   - Protocol references heavily sourced from [wiki.vg](https://wiki.vg/) and [PrismarineJS/minecraft-data](https://github.com/PrismarineJS/minecraft-data).
   - Uses `xUnit` for comprehensive bitwise and spatial mathematical testing.
 
+### Contributions & Recommendations
+If you found this project helpful or interesting, consider supporting the development:
+- ⭐ **Star this repository** to help it reach more developers!
+- 🤝 **Contributions:** Feel free to open issues or submit pull requests.
+- 💡 **Recommendations:** I highly recommend checking out [PrismarineJS](https://github.com/PrismarineJS) for their excellent protocol documentation and tools, which heavily inspired this project.
+
 ---
 
 <a name="tiếng-việt"></a>
@@ -88,6 +94,12 @@
 - **Công cụ & Tài liệu:** 
   - Tham khảo giao thức mạng từ [wiki.vg](https://wiki.vg/) và [PrismarineJS/minecraft-data](https://github.com/PrismarineJS/minecraft-data).
   - Sử dụng `xUnit` để viết unit test kiểm tra các thuật toán dịch bit và không gian 3D.
+
+### Đóng góp & Đề xuất
+Nếu bạn thấy dự án này thú vị hoặc có ích, hãy cân nhắc ủng hộ nhé:
+- ⭐ **Tặng 1 sao (Star) cho repository này** để giúp dự án được nhiều người biết đến hơn!
+- 🤝 **Đóng góp:** Chào đón mọi Pull Request và Issue đóng góp từ cộng đồng.
+- 💡 **Đề xuất (Recommendations):** Nếu bạn muốn tìm hiểu sâu về lập trình server Minecraft, tôi thực sự khuyên bạn nên tham khảo [PrismarineJS](https://github.com/PrismarineJS) – bộ tài liệu giao thức và công cụ của họ cực kỳ tuyệt vời và là nguồn cảm hứng lớn cho dự án này.
 
 ---
 
