@@ -37,3 +37,5 @@ server_config.json
 # Editors and Tools
 .vscode/
 node_modules/
+tools/VanillaServer/
+tools/
