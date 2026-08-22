@@ -14,7 +14,7 @@ public class ConnectionManagerTests
         
         // Create dummy socket (not connected, but enough to initialize)
         using var dummySocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        using var connection = new MinecraftConnection(dummySocket);
+        using var connection = new MinecraftConnection(dummySocket, manager, new Aurora.World.WorldManager());
         
         manager.AddConnection(connection);
         

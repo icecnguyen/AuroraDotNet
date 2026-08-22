@@ -11,13 +11,16 @@ public sealed class TcpServer : IDisposable
     private readonly Socket _listener;
     private readonly CancellationTokenSource _cts;
     private readonly ConnectionManager _connectionManager;
+    private readonly Aurora.World.WorldManager _worldManager;
 
-    public TcpServer(IPEndPoint endPoint, ConnectionManager connectionManager)
+    public TcpServer(IPEndPoint endPoint, ConnectionManager connectionManager, Aurora.World.WorldManager worldManager)
     {
         ArgumentNullException.ThrowIfNull(endPoint);
         ArgumentNullException.ThrowIfNull(connectionManager);
+        ArgumentNullException.ThrowIfNull(worldManager);
         
         _connectionManager = connectionManager;
+        _worldManager = worldManager;
         _listener = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
         _listener.Bind(endPoint);
         _cts = new CancellationTokenSource();
@@ -38,7 +41,7 @@ public sealed class TcpServer : IDisposable
                 var clientSocket = await _listener.AcceptAsync(_cts.Token).ConfigureAwait(false);
                 
                 // Construct the connection wrapping the pipeline
-                var connection = new MinecraftConnection(clientSocket, _connectionManager);
+                var connection = new MinecraftConnection(clientSocket, _connectionManager, _worldManager);
                 
                 // Add to manager
                 _connectionManager.AddConnection(connection);

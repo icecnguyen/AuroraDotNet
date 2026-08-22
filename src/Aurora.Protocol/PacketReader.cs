@@ -125,4 +125,13 @@ public ref struct PacketReader
         Reader.Advance(length);
         return slice.ToArray();
     }
+
+    public Aurora.Core.Math.Coordinate ReadPosition()
+    {
+        long val = ReadLong();
+        int x = (int)(val >> 38);
+        int y = (int)((val << 52) >> 52);
+        int z = (int)((val << 26) >> 38);
+        return new Aurora.Core.Math.Coordinate(x, y, z);
+    }
 }

@@ -14,9 +14,14 @@ public sealed class Chunk
     // Length: 16 * 384 * 16 = 98304 elements.
     private readonly ushort[] _blocks = new ushort[16 * 384 * 16];
 
+    // Light arrays (4-bit values stored as full bytes for performance in RAM)
+    private readonly byte[] _skyLight = new byte[16 * 384 * 16];
+    private readonly byte[] _blockLight = new byte[16 * 384 * 16];
+
     public Chunk(ChunkPosition position)
     {
         Position = position;
+        Array.Fill(_skyLight, (byte)15); // Default to fully lit by sky
     }
 
     public void SetBlockState(int x, int y, int z, ushort stateId)
@@ -42,6 +47,34 @@ public sealed class Chunk
         return _blocks[index];
     }
 
+    public void SetSkyLight(int x, int y, int z, byte lightLevel)
+    {
+        if (y is < -64 or >= 320) return;
+        x &= 15; z &= 15;
+        _skyLight[GetIndex(x, y, z)] = lightLevel;
+    }
+
+    public byte GetSkyLight(int x, int y, int z)
+    {
+        if (y is < -64 or >= 320) return 15;
+        x &= 15; z &= 15;
+        return _skyLight[GetIndex(x, y, z)];
+    }
+
+    public void SetBlockLight(int x, int y, int z, byte lightLevel)
+    {
+        if (y is < -64 or >= 320) return;
+        x &= 15; z &= 15;
+        _blockLight[GetIndex(x, y, z)] = lightLevel;
+    }
+
+    public byte GetBlockLight(int x, int y, int z)
+    {
+        if (y is < -64 or >= 320) return 0;
+        x &= 15; z &= 15;
+        return _blockLight[GetIndex(x, y, z)];
+    }
+
     // Calculates the flat 1D index from 3D coordinates.
     // Order: Y, Z, X (Standard Minecraft Palette layout format for chunks)
     private static int GetIndex(int x, int y, int z)
@@ -51,4 +84,6 @@ public sealed class Chunk
     }
     
     public ReadOnlySpan<ushort> RawBlocks => _blocks;
+    public ReadOnlySpan<byte> RawSkyLight => _skyLight;
+    public ReadOnlySpan<byte> RawBlockLight => _blockLight;
 }

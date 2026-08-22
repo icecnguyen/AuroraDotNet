@@ -16,6 +16,10 @@ public class ChunkDataPacket : IPacket
     // We leave BlockEntities empty for flat world
     // We also leave Light data mostly empty or zeroed, client will recalculate or ignore
 
+#pragma warning disable CA1819
+    public byte[] LightData { get; set; } = System.Array.Empty<byte>();
+#pragma warning restore CA1819
+
     public void Read(ref PacketReader reader) { }
 
     public void Write(ref PacketWriter writer)
@@ -37,20 +41,17 @@ public class ChunkDataPacket : IPacket
         // Block Entities
         writer.WriteVarInt(0);
         
-        // Light Data
-        // SkyLightMask (Array of Long)
-        writer.WriteVarInt(0); 
-        // BlockLightMask (Array of Long)
-        writer.WriteVarInt(0);
-        // EmptySkyLightMask (Array of Long)
-        writer.WriteVarInt(0);
-        // EmptyBlockLightMask (Array of Long)
-        writer.WriteVarInt(0);
-        
-        // SkyLight Arrays
-        writer.WriteVarInt(0);
-        
-        // BlockLight Arrays
-        writer.WriteVarInt(0);
+        if (LightData.Length == 0)
+        {
+            // Fallback for empty/unloaded chunks
+            writer.WriteVarInt(0); writer.WriteVarInt(0); writer.WriteVarInt(0); writer.WriteVarInt(0);
+            writer.WriteVarInt(0); writer.WriteVarInt(0);
+            return;
+        }
+
+        // Write pre-serialized Light Data
+        var lightSpan = writer.Writer.GetSpan(LightData.Length);
+        LightData.CopyTo(lightSpan);
+        writer.Writer.Advance(LightData.Length);
     }
 }

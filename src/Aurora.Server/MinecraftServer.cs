@@ -3,6 +3,7 @@ using System.Net;
 using System.Threading;
 using Aurora.Threading;
 using Aurora.Network;
+using Aurora.World;
 
 namespace Aurora.Server;
 
@@ -28,7 +29,7 @@ public sealed class MinecraftServer : IDisposable
         
         // Setup threading and networking
         _workerPool = new WorkerPool(4);
-        _tcpServer = new TcpServer(new IPEndPoint(IPAddress.Any, 25565), ConnectionManager);
+        _tcpServer = new TcpServer(new IPEndPoint(IPAddress.Any, 25565), ConnectionManager, WorldManager);
     }
 
     public void Start()

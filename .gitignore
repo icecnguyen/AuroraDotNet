@@ -38,4 +38,4 @@ server_config.json
 .vscode/
 node_modules/
 tools/VanillaServer/
-tools/
+img/

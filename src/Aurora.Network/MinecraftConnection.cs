@@ -53,13 +53,15 @@ public sealed class MinecraftConnection : IDisposable
 
     public event EventHandler<ConnectionEventArgs>? OnDisconnected;
 
-    private readonly ConnectionManager? _connectionManager;
+    private readonly ConnectionManager _connectionManager;
+    private readonly Aurora.World.WorldManager _worldManager;
 
-    public MinecraftConnection(Socket socket, ConnectionManager? connectionManager = null)
+    public MinecraftConnection(Socket socket, ConnectionManager connectionManager, Aurora.World.WorldManager worldManager)
     {
         ArgumentNullException.ThrowIfNull(socket);
         _socket = socket;
         _connectionManager = connectionManager;
+        _worldManager = worldManager;
         RemoteEndPoint = _socket.RemoteEndPoint;
 
         _receivePipe = new Pipe();
@@ -372,20 +374,21 @@ public sealed class MinecraftConnection : IDisposable
                 // In 1.21.4, Update View Position (0x58) uses VarInt for X and Z.
                 // VarInt(0) is 1 byte (0x00). So two VarInts(0, 0) is just 2 bytes.
                 var centerPos = new Aurora.Protocol.Play.RawPacket(0x58, new byte[] { 0, 0 }); // X=0, Z=0
-                SendPacket(centerPos);
-                
-                // 3. Send 49 Chunks (7x7 grid)
+                // Send 49 initial chunks (7x7) based on player's spawn position (0, 0)
+                // TODO: Make this dynamic based on view distance
                 for (int cx = -3; cx <= 3; cx++)
                 {
                     for (int cz = -3; cz <= 3; cz++)
                     {
-                        var chunk = Aurora.World.FlatWorldGenerator.GenerateChunk(cx, cz);
-                        var chunkDataBytes = Aurora.World.FlatWorldGenerator.GenerateChunkData(chunk);
+                        var chunk = _worldManager.GetOrGenerateChunk(cx, cz);
+                        var chunkDataBytes = Aurora.World.ChunkSerializer.Serialize(chunk);
+                        var lightDataBytes = Aurora.World.ChunkSerializer.SerializeLight(chunk);
                         var chunkPacket = new Aurora.Protocol.Play.ChunkDataPacket
                         {
                             X = cx,
                             Z = cz,
-                            ChunkData = chunkDataBytes
+                            ChunkData = chunkDataBytes,
+                            LightData = lightDataBytes
                         };
                         SendPacket(chunkPacket);
                     }
@@ -396,7 +399,6 @@ public sealed class MinecraftConnection : IDisposable
                 SendPacket(playerPos);
                 
                 // 5. Spawn existing players for this player, and spawn this player for others
-                if (_connectionManager != null)
                 {
                     // Create info for myself
                     var myInfo = new Aurora.Protocol.Play.PlayerInfoUpdatePacket
@@ -491,15 +493,12 @@ public sealed class MinecraftConnection : IDisposable
                 pos.Read(ref reader);
                 X = pos.X; Y = pos.Y; Z = pos.Z;
                 
-                if (_connectionManager != null)
+                _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityTeleportPacket
                 {
-                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityTeleportPacket
-                    {
-                        EntityId = this.EntityId,
-                        X = this.X, Y = this.Y, Z = this.Z,
-                        Yaw = this.Yaw, Pitch = this.Pitch, OnGround = pos.OnGround
-                    }, except: this.Id);
-                }
+                    EntityId = this.EntityId,
+                    X = this.X, Y = this.Y, Z = this.Z,
+                    Yaw = this.Yaw, Pitch = this.Pitch, OnGround = pos.OnGround
+                }, except: this.Id);
             }
             else if (packetId == 0x1D) // Position and Rotation
             {
@@ -508,21 +507,18 @@ public sealed class MinecraftConnection : IDisposable
                 X = posRot.X; Y = posRot.Y; Z = posRot.Z;
                 Yaw = posRot.Yaw; Pitch = posRot.Pitch;
                 
-                if (_connectionManager != null)
+                _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityTeleportPacket
                 {
-                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityTeleportPacket
-                    {
-                        EntityId = this.EntityId,
-                        X = this.X, Y = this.Y, Z = this.Z,
-                        Yaw = this.Yaw, Pitch = this.Pitch, OnGround = posRot.OnGround
-                    }, except: this.Id);
-                    
-                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityHeadRotationPacket
-                    {
-                        EntityId = this.EntityId,
-                        HeadYaw = this.Yaw
-                    }, except: this.Id);
-                }
+                    EntityId = this.EntityId,
+                    X = this.X, Y = this.Y, Z = this.Z,
+                    Yaw = this.Yaw, Pitch = this.Pitch, OnGround = posRot.OnGround
+                }, except: this.Id);
+                
+                _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityHeadRotationPacket
+                {
+                    EntityId = this.EntityId,
+                    HeadYaw = this.Yaw
+                }, except: this.Id);
             }
             else if (packetId == 0x1E) // Rotation
             {
@@ -530,48 +526,37 @@ public sealed class MinecraftConnection : IDisposable
                 rot.Read(ref reader);
                 Yaw = rot.Yaw; Pitch = rot.Pitch;
                 
-                if (_connectionManager != null)
+                _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityTeleportPacket
                 {
-                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityTeleportPacket
-                    {
-                        EntityId = this.EntityId,
-                        X = this.X, Y = this.Y, Z = this.Z,
-                        Yaw = this.Yaw, Pitch = this.Pitch, OnGround = rot.OnGround
-                    }, except: this.Id);
-                    
-                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityHeadRotationPacket
-                    {
-                        EntityId = this.EntityId,
-                        HeadYaw = this.Yaw
-                    }, except: this.Id);
-                }
-            }
-            else if (packetId == 0x27) // Player Action (Dig)
-            {
-                var action = new Aurora.Protocol.Play.PlayerActionPacket();
-                action.Read(ref reader);
+                    EntityId = this.EntityId,
+                    X = this.X, Y = this.Y, Z = this.Z,
+                    Yaw = this.Yaw, Pitch = this.Pitch, OnGround = rot.OnGround
+                }, except: this.Id);
                 
-                // Status 0: Started digging, 1: Cancelled, 2: Finished
-                // For creative mode or instant breaking, we can just treat Started (0) or Finished (2) as break.
-                if (action.Status == 0 || action.Status == 2)
+                _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityHeadRotationPacket
                 {
-                    var (x, y, z) = action.BlockPosition;
-                    
-                    // Send BlockUpdate (Air)
-                    var update = new Aurora.Protocol.Play.BlockUpdatePacket
+                    EntityId = this.EntityId,
+                    HeadYaw = this.Yaw
+                }, except: this.Id);
+            }
+            else if (packetId == 0x24) // Serverbound Player Action (Block Dig)
+            {
+                int status = reader.ReadVarInt();
+                var position = reader.ReadPosition();
+                byte face = reader.ReadByte();
+                int sequence = reader.ReadVarInt();
+
+                if (status == 2) // Block broken (simplified)
+                {
+                    // Update RAM
+                    _worldManager.SetBlock(position.X, position.Y, position.Z, Aurora.World.Generation.SurfaceBuilder.Air);
+
+                    var blockUpdate = new Aurora.Protocol.Play.BlockUpdatePacket
                     {
-                        Location = action.Location,
-                        BlockStateId = 0 // Air
+                        Location = Aurora.Protocol.Play.BlockUpdatePacket.EncodePosition(position.X, position.Y, position.Z),
+                        BlockStateId = Aurora.World.Generation.SurfaceBuilder.Air // Air
                     };
-                    
-                    if (_connectionManager != null)
-                    {
-                        _connectionManager.BroadcastPacket(update);
-                    }
-                    else
-                    {
-                        SendPacket(update);
-                    }
+                    _connectionManager.BroadcastPacket(blockUpdate);
                 }
             }
             else if (packetId == 0x3C) // Use Item On Block (Place)
@@ -590,22 +575,18 @@ public sealed class MinecraftConnection : IDisposable
                 else if (place.Face == 4) x--;
                 else if (place.Face == 5) x++;
                 
+                // Update RAM
+                _worldManager.SetBlock(x, y, z, Aurora.World.Generation.SurfaceBuilder.Stone);
+
                 long newLocation = Aurora.Protocol.Play.BlockUpdatePacket.EncodePosition(x, y, z);
                 
                 var update = new Aurora.Protocol.Play.BlockUpdatePacket
                 {
                     Location = newLocation,
-                    BlockStateId = 1 // Stone
+                    BlockStateId = Aurora.World.Generation.SurfaceBuilder.Stone // Stone
                 };
                 
-                if (_connectionManager != null)
-                {
-                    _connectionManager.BroadcastPacket(update);
-                }
-                else
-                {
-                    SendPacket(update);
-                }
+                _connectionManager.BroadcastPacket(update);
             }
             else if (packetId == 0x05) // Chat Command
             {
