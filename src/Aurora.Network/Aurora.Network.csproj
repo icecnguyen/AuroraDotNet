@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Aurora.Core\Aurora.Core.csproj" />
     <ProjectReference Include="..\Aurora.Protocol\Aurora.Protocol.csproj" />
+    <ProjectReference Include="..\Aurora.World\Aurora.World.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
