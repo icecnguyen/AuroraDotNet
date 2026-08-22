@@ -27,6 +27,29 @@ public sealed class ConnectionManager : IDisposable
         connection.OnDisconnected -= OnConnectionDisconnected;
     }
 
+    public IEnumerable<MinecraftConnection> Players => _connections.Values;
+
+    public void BroadcastPacket(Aurora.Protocol.IPacket packet, Guid? except = null)
+    {
+        foreach (var connection in _connections.Values)
+        {
+            if (except != null && connection.Id == except) continue;
+            // Only broadcast to players in Play state (CurrentState == 4)
+            if (connection.CurrentState == 4)
+            {
+                connection.SendPacket(packet);
+            }
+        }
+    }
+
+    public void KickPlayer(Guid id)
+    {
+        if (_connections.TryGetValue(id, out var connection))
+        {
+            connection.Disconnect();
+        }
+    }
+
     public void DisconnectAll()
     {
         foreach (var connection in _connections.Values)

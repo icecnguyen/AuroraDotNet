@@ -34,15 +34,32 @@ public sealed class MinecraftConnection : IDisposable
     public PipeWriter Writer => _sendPipe.Writer;
 
     // Use a numeric state (0 = Handshake, 1 = Status, 2 = Login, 3 = Config, 4 = Play)
-    public int CurrentState { get; set; }
+    public int CurrentState { get; set; } // Handshake
     public int ClientProtocolVersion { get; set; }
+    public string Username { get; private set; } = "Unknown";
+    public DateTimeOffset ConnectedAt { get; } = DateTimeOffset.UtcNow;
+    public long Ping { get; set; }
+    
+    // Position
+    public double X { get; set; } = 0.5;
+    public double Y { get; set; } = 100.0;
+    public double Z { get; set; } = 0.5;
+    public float Yaw { get; set; }
+    public float Pitch { get; set; }
+    
+    // Entity
+    private static int _entityIdCounter = 1;
+    public int EntityId { get; } = System.Threading.Interlocked.Increment(ref _entityIdCounter);
 
     public event EventHandler<ConnectionEventArgs>? OnDisconnected;
 
-    public MinecraftConnection(Socket socket)
+    private readonly ConnectionManager? _connectionManager;
+
+    public MinecraftConnection(Socket socket, ConnectionManager? connectionManager = null)
     {
         ArgumentNullException.ThrowIfNull(socket);
         _socket = socket;
+        _connectionManager = connectionManager;
         RemoteEndPoint = _socket.RemoteEndPoint;
 
         _receivePipe = new Pipe();
@@ -226,14 +243,15 @@ public sealed class MinecraftConnection : IDisposable
             {
                 var ls = new Aurora.Protocol.Login.LoginStartPacket();
                 ls.Read(ref reader);
+                Username = string.IsNullOrEmpty(ls.Name) ? "Unknown" : ls.Name;
 #pragma warning disable CA1303
-                Console.WriteLine($"[Network] Player '{ls.Name}' logging in...");
+                Console.WriteLine($"[Network] Player '{Username}' logging in...");
 #pragma warning restore CA1303
                 
                 var success = new Aurora.Protocol.Login.LoginSuccessPacket
                 {
                     Uuid = ls.Uuid == Guid.Empty ? Guid.NewGuid() : ls.Uuid,
-                    Username = ls.Name
+                    Username = Username
                 };
                 SendPacket(success);
             }
@@ -252,15 +270,87 @@ public sealed class MinecraftConnection : IDisposable
                 var knownPacks = new Aurora.Protocol.Configuration.KnownPacksPacket();
                 SendPacket(knownPacks);
 
-                // 3. Send Registry Data (Note: A real Vanilla 1.21.4 NBT dump is required here to bypass client disconnect)
-                var registryData = new Aurora.Protocol.Configuration.RegistryDataPacket
+                // 3. Send Registry Data
+                try
                 {
-                    RegistryId = "minecraft:dimension_type",
-                    // NbtData = ... (needs to be loaded from a valid NBT dump)
-                };
-                SendPacket(registryData);
+                    // For safety, load them relative to AppDomain.CurrentDomain.BaseDirectory
+                    var baseDir = System.AppDomain.CurrentDomain.BaseDirectory;
+                    var rawRegistriesPath = System.IO.Path.Combine(baseDir, "Resources", "RawRegistries");
+                    if (System.IO.Directory.Exists(rawRegistriesPath))
+                    {
+                        var orderedRegistries = new string[]
+                        {
+                            "raw_minecraft_worldgen_biome.bin",
+                            "raw_minecraft_chat_type.bin",
+                            "raw_minecraft_trim_pattern.bin",
+                            "raw_minecraft_trim_material.bin",
+                            "raw_minecraft_wolf_variant.bin",
+                            "raw_minecraft_painting_variant.bin",
+                            "raw_minecraft_dimension_type.bin",
+                            "raw_minecraft_damage_type.bin",
+                            "raw_minecraft_banner_pattern.bin",
+                            "raw_minecraft_enchantment.bin",
+                            "raw_minecraft_jukebox_song.bin",
+                            "raw_minecraft_instrument.bin"
+                        };
 
-                // 4. Send Finish Configuration (0x03 in 1.21.4)
+                        foreach (var binFileName in orderedRegistries)
+                        {
+                            var binFile = System.IO.Path.Combine(rawRegistriesPath, binFileName);
+                            if (!System.IO.File.Exists(binFile)) continue;
+                            
+                            var fullBuffer = System.IO.File.ReadAllBytes(binFile);
+                            // The first byte of fullBuffer is the PacketId (0x07 for Registry Data).
+                            // The rest is the payload.
+                            var payload = new byte[fullBuffer.Length - 1];
+                            System.Array.Copy(fullBuffer, 1, payload, 0, payload.Length);
+                            
+                            var registryPacket = new Aurora.Protocol.Configuration.RegistryDataPacket
+                            {
+                                Payload = payload
+                            };
+                            SendPacket(registryPacket);
+                        }
+                    }
+                    else
+                    {
+#pragma warning disable CA1303
+                        Console.WriteLine("[Network] WARNING: Missing RawRegistries folder! Client will likely disconnect.");
+#pragma warning restore CA1303
+                    }
+                }
+#pragma warning disable CA1031
+                catch (System.Exception ex)
+                {
+#pragma warning disable CA1303
+                    Console.WriteLine($"[Network] ERROR reading NBT: {ex.Message}");
+#pragma warning restore CA1303
+                }
+#pragma warning restore CA1031
+
+                // 4. Send Update Tags (0x0D)
+                var tagsBaseDir = System.AppDomain.CurrentDomain.BaseDirectory;
+                var tagsFile = System.IO.Path.Combine(tagsBaseDir, "Resources", "raw_tags.bin");
+                if (System.IO.File.Exists(tagsFile))
+                {
+                    var fullBuffer = System.IO.File.ReadAllBytes(tagsFile);
+                    var payload = new byte[fullBuffer.Length - 1];
+                    System.Array.Copy(fullBuffer, 1, payload, 0, payload.Length);
+                    
+                    var tagsPacket = new Aurora.Protocol.Configuration.UpdateTagsPacket
+                    {
+                        Payload = payload
+                    };
+                    SendPacket(tagsPacket);
+                }
+                else
+                {
+#pragma warning disable CA1303
+                    Console.WriteLine("[Network] WARNING: Missing raw_tags.bin! Client will likely disconnect.");
+#pragma warning restore CA1303
+                }
+
+                // 5. Send Finish Configuration (0x03 in 1.21.4)
                 var finishConfig = new Aurora.Protocol.Configuration.FinishConfigurationPacket();
                 SendPacket(finishConfig);
             }
@@ -274,15 +364,110 @@ public sealed class MinecraftConnection : IDisposable
 #pragma warning restore CA1303
                 CurrentState = 4; // Play
                 
-                // We should send Join Game, but since it's highly complex, let's just log it for now
-                // Actually, if we don't send Join Game, it will get stuck at "Joining world..." again.
-                // Send Join Game
-                var joinGame = new Aurora.Protocol.Play.JoinGamePacket();
+                // 1. Send Join Game
+                var joinGame = new Aurora.Protocol.Play.JoinGamePacket { EntityId = this.EntityId };
                 SendPacket(joinGame);
                 
-                // Send Player Position to dismiss "Joining world..." screen
+                // 2. Send Center View Position
+                // In 1.21.4, Update View Position (0x58) uses VarInt for X and Z.
+                // VarInt(0) is 1 byte (0x00). So two VarInts(0, 0) is just 2 bytes.
+                var centerPos = new Aurora.Protocol.Play.RawPacket(0x58, new byte[] { 0, 0 }); // X=0, Z=0
+                SendPacket(centerPos);
+                
+                // 3. Send 49 Chunks (7x7 grid)
+                for (int cx = -3; cx <= 3; cx++)
+                {
+                    for (int cz = -3; cz <= 3; cz++)
+                    {
+                        var chunk = Aurora.World.FlatWorldGenerator.GenerateChunk(cx, cz);
+                        var chunkDataBytes = Aurora.World.FlatWorldGenerator.GenerateChunkData(chunk);
+                        var chunkPacket = new Aurora.Protocol.Play.ChunkDataPacket
+                        {
+                            X = cx,
+                            Z = cz,
+                            ChunkData = chunkDataBytes
+                        };
+                        SendPacket(chunkPacket);
+                    }
+                }
+                
+                // 4. Send Player Position to dismiss "Joining world..." screen
                 var playerPos = new Aurora.Protocol.Play.PlayerPositionPacket();
                 SendPacket(playerPos);
+                
+                // 5. Spawn existing players for this player, and spawn this player for others
+                if (_connectionManager != null)
+                {
+                    // Create info for myself
+                    var myInfo = new Aurora.Protocol.Play.PlayerInfoUpdatePacket
+                    {
+                        // 0: add_player(1), 1: init_chat(2), 2: gamemode(4), 3: listed(8), 4: latency(16), 5: display_name(32). 
+                        // 1 + 4 + 8 + 16 = 29 = 0x1D
+                        Actions = 0x1D, 
+                        Entries = new[]
+                        {
+                            new Aurora.Protocol.Play.PlayerInfoEntry
+                            {
+                                UUID = this.Id,
+                                Name = this.Username,
+                                GameMode = 1,
+                                Listed = true,
+                                Ping = 0,
+                                HasDisplayName = false
+                            }
+                        }
+                    };
+                    
+                    var mySpawn = new Aurora.Protocol.Play.SpawnEntityPacket
+                    {
+                        EntityId = this.EntityId,
+                        EntityUUID = this.Id,
+                        Type = 147, // Player
+                        X = this.X, Y = this.Y, Z = this.Z,
+                        Pitch = this.Pitch, Yaw = this.Yaw, HeadYaw = this.Yaw
+                    };
+                    
+                    // Tell everyone about me
+                    _connectionManager.BroadcastPacket(myInfo, except: this.Id);
+                    _connectionManager.BroadcastPacket(mySpawn, except: this.Id);
+                    
+                    // Tell me about everyone
+                    foreach (var other in _connectionManager.Players)
+                    {
+                        if (other.Id == this.Id || other.CurrentState != 4) continue;
+                        
+                        var otherInfo = new Aurora.Protocol.Play.PlayerInfoUpdatePacket
+                        {
+                            Actions = 0x1D,
+                            Entries = new[]
+                            {
+                                new Aurora.Protocol.Play.PlayerInfoEntry
+                                {
+                                    UUID = other.Id,
+                                    Name = other.Username,
+                                    GameMode = 1,
+                                    Listed = true,
+                                    Ping = (int)other.Ping,
+                                    HasDisplayName = false
+                                }
+                            }
+                        };
+                        SendPacket(otherInfo);
+                        
+                        var otherSpawn = new Aurora.Protocol.Play.SpawnEntityPacket
+                        {
+                            EntityId = other.EntityId,
+                            EntityUUID = other.Id,
+                            Type = 147,
+                            X = other.X, Y = other.Y, Z = other.Z,
+                            Pitch = other.Pitch, Yaw = other.Yaw, HeadYaw = other.Yaw
+                        };
+                        SendPacket(otherSpawn);
+                    }
+                }
+
+                // 6. Start Keep Alive Task
+                _keepAliveTask = System.Threading.Tasks.Task.Run(KeepAliveLoop);
             }
             else
             {
@@ -291,10 +476,191 @@ public sealed class MinecraftConnection : IDisposable
         }
         else if (CurrentState == 4) // Play
         {
-            // Ignore play packets for now
+            if (packetId == 0x1A) // Serverbound Keep Alive
+            {
+                var keepAlive = new Aurora.Protocol.Play.KeepAliveServerboundPacket();
+                keepAlive.Read(ref reader);
+                if (keepAlive.KeepAliveId == _lastKeepAliveId)
+                {
+                    Ping = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _lastKeepAliveId;
+                }
+            }
+            else if (packetId == 0x1C) // Position
+            {
+                var pos = new Aurora.Protocol.Play.SetPlayerPositionPacket();
+                pos.Read(ref reader);
+                X = pos.X; Y = pos.Y; Z = pos.Z;
+                
+                if (_connectionManager != null)
+                {
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityTeleportPacket
+                    {
+                        EntityId = this.EntityId,
+                        X = this.X, Y = this.Y, Z = this.Z,
+                        Yaw = this.Yaw, Pitch = this.Pitch, OnGround = pos.OnGround
+                    }, except: this.Id);
+                }
+            }
+            else if (packetId == 0x1D) // Position and Rotation
+            {
+                var posRot = new Aurora.Protocol.Play.SetPlayerPositionAndRotationPacket();
+                posRot.Read(ref reader);
+                X = posRot.X; Y = posRot.Y; Z = posRot.Z;
+                Yaw = posRot.Yaw; Pitch = posRot.Pitch;
+                
+                if (_connectionManager != null)
+                {
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityTeleportPacket
+                    {
+                        EntityId = this.EntityId,
+                        X = this.X, Y = this.Y, Z = this.Z,
+                        Yaw = this.Yaw, Pitch = this.Pitch, OnGround = posRot.OnGround
+                    }, except: this.Id);
+                    
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityHeadRotationPacket
+                    {
+                        EntityId = this.EntityId,
+                        HeadYaw = this.Yaw
+                    }, except: this.Id);
+                }
+            }
+            else if (packetId == 0x1E) // Rotation
+            {
+                var rot = new Aurora.Protocol.Play.SetPlayerRotationPacket();
+                rot.Read(ref reader);
+                Yaw = rot.Yaw; Pitch = rot.Pitch;
+                
+                if (_connectionManager != null)
+                {
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityTeleportPacket
+                    {
+                        EntityId = this.EntityId,
+                        X = this.X, Y = this.Y, Z = this.Z,
+                        Yaw = this.Yaw, Pitch = this.Pitch, OnGround = rot.OnGround
+                    }, except: this.Id);
+                    
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityHeadRotationPacket
+                    {
+                        EntityId = this.EntityId,
+                        HeadYaw = this.Yaw
+                    }, except: this.Id);
+                }
+            }
+            else if (packetId == 0x27) // Player Action (Dig)
+            {
+                var action = new Aurora.Protocol.Play.PlayerActionPacket();
+                action.Read(ref reader);
+                
+                // Status 0: Started digging, 1: Cancelled, 2: Finished
+                // For creative mode or instant breaking, we can just treat Started (0) or Finished (2) as break.
+                if (action.Status == 0 || action.Status == 2)
+                {
+                    var (x, y, z) = action.BlockPosition;
+                    
+                    // Send BlockUpdate (Air)
+                    var update = new Aurora.Protocol.Play.BlockUpdatePacket
+                    {
+                        Location = action.Location,
+                        BlockStateId = 0 // Air
+                    };
+                    
+                    if (_connectionManager != null)
+                    {
+                        _connectionManager.BroadcastPacket(update);
+                    }
+                    else
+                    {
+                        SendPacket(update);
+                    }
+                }
+            }
+            else if (packetId == 0x3C) // Use Item On Block (Place)
+            {
+                var place = new Aurora.Protocol.Play.UseItemOnBlockPacket();
+                place.Read(ref reader);
+                
+                var (x, y, z) = place.BlockPosition;
+                
+                // Calculate the position of the placed block based on the face clicked
+                // Face: 0=Bottom, 1=Top, 2=North, 3=South, 4=West, 5=East
+                if (place.Face == 0) y--;
+                else if (place.Face == 1) y++;
+                else if (place.Face == 2) z--;
+                else if (place.Face == 3) z++;
+                else if (place.Face == 4) x--;
+                else if (place.Face == 5) x++;
+                
+                long newLocation = Aurora.Protocol.Play.BlockUpdatePacket.EncodePosition(x, y, z);
+                
+                var update = new Aurora.Protocol.Play.BlockUpdatePacket
+                {
+                    Location = newLocation,
+                    BlockStateId = 1 // Stone
+                };
+                
+                if (_connectionManager != null)
+                {
+                    _connectionManager.BroadcastPacket(update);
+                }
+                else
+                {
+                    SendPacket(update);
+                }
+            }
+            else if (packetId == 0x05) // Chat Command
+            {
+                var cmd = new Aurora.Protocol.Play.ChatCommandServerboundPacket();
+                cmd.Read(ref reader);
+                
+                string response = $"Unknown command: /{cmd.Command}";
+                if (cmd.Command.StartsWith("ping", System.StringComparison.OrdinalIgnoreCase)) response = $"Pong! Your ping is {Ping}ms.";
+                else if (cmd.Command.StartsWith("pos", System.StringComparison.OrdinalIgnoreCase)) response = $"You are at X={X:F1}, Y={Y:F1}, Z={Z:F1}";
+                
+                SendPacket(new Aurora.Protocol.Play.SystemChatMessagePacket { Content = response });
+            }
+            else if (packetId == 0x07) // Chat Message
+            {
+                var chat = new Aurora.Protocol.Play.ChatMessageServerboundPacket();
+                chat.Read(ref reader);
+                
+                // Echo back for now
+                var responsePacket = new Aurora.Protocol.Play.SystemChatMessagePacket { Content = $"<{Username}> {chat.Message}" };
+                
+                if (_connectionManager != null)
+                {
+                    _connectionManager.BroadcastPacket(responsePacket);
+                }
+                else
+                {
+                    SendPacket(responsePacket);
+                }
+            }
         }
     }
     
+    private System.Threading.Tasks.Task? _keepAliveTask;
+    private long _lastKeepAliveId;
+
+    private async System.Threading.Tasks.Task KeepAliveLoop()
+    {
+#pragma warning disable CA1031
+        try
+        {
+            while (CurrentState == 4) // Play
+            {
+                _lastKeepAliveId = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var keepAlive = new Aurora.Protocol.Play.KeepAliveClientboundPacket { KeepAliveId = _lastKeepAliveId };
+                SendPacket(keepAlive);
+                await System.Threading.Tasks.Task.Delay(15000).ConfigureAwait(false); // 15 seconds
+            }
+        }
+        catch
+        {
+            // Ignore disconnected
+        }
+#pragma warning restore CA1031
+    }
+
     public void SendPacket(Aurora.Protocol.IPacket packet)
     {
         ArgumentNullException.ThrowIfNull(packet);

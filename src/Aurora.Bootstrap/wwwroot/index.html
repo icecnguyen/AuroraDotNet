@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aurora Control Panel</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --glass-bg: rgba(30, 41, 59, 0.7);
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent: #3b82f6;
+            --accent-hover: #2563eb;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #fbbf24;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            background-image: 
+                radial-gradient(circle at 15% 50%, rgba(59, 130, 246, 0.15) 0%, transparent 50%),
+                radial-gradient(circle at 85% 30%, rgba(16, 185, 129, 0.15) 0%, transparent 50%);
+            background-attachment: fixed;
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 2rem;
+        }
+
+        .dashboard {
+            width: 100%;
+            max-width: 1300px;
+            display: grid;
+            grid-template-columns: 280px 1fr;
+            gap: 2rem;
+            height: 85vh;
+        }
+
+        .glass-panel {
+            background: var(--glass-bg);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--glass-border);
+            border-radius: 20px;
+            padding: 2rem;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar {
+            gap: 2rem;
+        }
+
+        .brand h1 {
+            font-weight: 800;
+            font-size: 2.2rem;
+            background: linear-gradient(135deg, #60a5fa, #34d399);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.2rem;
+        }
+
+        .brand p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .nav-menu {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        .nav-item {
+            padding: 0.8rem 1rem;
+            border-radius: 10px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.8rem;
+        }
+
+        .nav-item:hover {
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-primary);
+        }
+
+        .nav-item.active {
+            background: linear-gradient(90deg, rgba(59, 130, 246, 0.2), transparent);
+            color: var(--accent);
+            border-left: 4px solid var(--accent);
+        }
+
+        .status-card {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-top: auto;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .status-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: var(--success);
+            box-shadow: 0 0 10px var(--success);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        .stat-box {
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+        }
+        .stat-label { font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
+        .stat-value { font-size: 1.1rem; font-weight: 600; }
+
+        /* Main Content */
+        .main-content {
+            padding: 0;
+            overflow: hidden;
+        }
+
+        .tab-content {
+            display: none;
+            height: 100%;
+            flex-direction: column;
+        }
+        .tab-content.active {
+            display: flex;
+        }
+
+        .tab-header {
+            padding: 1.5rem 2rem;
+            border-bottom: 1px solid var(--glass-border);
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .tab-header h2 {
+            font-size: 1.4rem;
+            font-weight: 600;
+        }
+
+        .tab-header p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-top: 0.2rem;
+        }
+
+        /* Console Tab */
+        .console-output {
+            flex-grow: 1;
+            padding: 1.5rem 2rem;
+            overflow-y: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            color: #cbd5e1;
+            background: rgba(0, 0, 0, 0.3);
+        }
+        .console-output p { word-wrap: break-word; margin-bottom: 4px; }
+        .log-info { color: #60a5fa; }
+        .log-warn { color: #fbbf24; }
+        .log-error { color: #f87171; }
+
+        .console-input-area {
+            display: flex;
+            padding: 1rem 2rem;
+            background: rgba(255, 255, 255, 0.02);
+            border-top: 1px solid var(--glass-border);
+        }
+
+        .console-input {
+            flex-grow: 1;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px 0 0 8px;
+            padding: 0.8rem 1.2rem;
+            color: white;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+            transition: all 0.2s;
+        }
+        .console-input:focus { border-color: var(--accent); }
+        .console-btn {
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 0 8px 8px 0;
+            padding: 0 1.5rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .console-btn:hover { background: var(--accent-hover); }
+
+        /* Players Tab */
+        .players-container {
+            padding: 2rem;
+            flex-grow: 1;
+            overflow-y: auto;
+        }
+        
+        .player-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .player-table th {
+            text-align: left;
+            padding: 1rem;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 1px solid var(--glass-border);
+        }
+        
+        .player-table td {
+            padding: 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            vertical-align: middle;
+        }
+
+        .player-table tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        
+        .player-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 4px;
+            vertical-align: middle;
+            margin-right: 12px;
+            background: rgba(0,0,0,0.2);
+        }
+
+        .ping-good { color: var(--success); }
+        .ping-warn { color: var(--warning); }
+        .ping-bad { color: var(--danger); }
+
+        .btn-kick {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--danger);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            padding: 0.4rem 0.8rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-kick:hover {
+            background: rgba(239, 68, 68, 0.2);
+        }
+
+        /* Empty State */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--text-secondary);
+            text-align: center;
+        }
+        .empty-state h3 { margin-bottom: 0.5rem; color: var(--text-primary); }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1); }
+        ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
+    </style>
+</head>
+<body>
+
+    <div class="dashboard">
+        <aside class="glass-panel sidebar">
+            <div class="brand">
+                <h1>Aurora</h1>
+                <p>Advanced C# Server</p>
+            </div>
+
+            <nav class="nav-menu">
+                <div class="nav-item active" onclick="switchTab('console', this)">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"></path></svg>
+                    Console
+                </div>
+                <div class="nav-item" onclick="switchTab('players', this)">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"></path></svg>
+                    Players
+                </div>
+                <div class="nav-item" onclick="switchTab('settings', this)">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                    Settings
+                </div>
+            </nav>
+
+            <div class="status-card">
+                <div class="status-header">
+                    <div class="status-indicator" id="status-dot"></div>
+                    <span id="status-text">Connecting...</span>
+                </div>
+                
+                <div class="stats-grid">
+                    <div class="stat-box">
+                        <span class="stat-label">Memory</span>
+                        <span class="stat-value" id="mem-usage">-- MB</span>
+                    </div>
+                    <div class="stat-box">
+                        <span class="stat-label">Uptime</span>
+                        <span class="stat-value" id="uptime">00:00:00</span>
+                    </div>
+                    <div class="stat-box">
+                        <span class="stat-label">Protocol</span>
+                        <span class="stat-value" id="protocol-ver">768</span>
+                    </div>
+                    <div class="stat-box">
+                        <span class="stat-label">Players</span>
+                        <span class="stat-value"><span id="player-count">0</span>/100</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <main class="glass-panel main-content">
+            
+            <!-- CONSOLE TAB -->
+            <div id="tab-console" class="tab-content active">
+                <div class="tab-header">
+                    <h2>Live Console</h2>
+                    <p>Real-time server logs and command execution</p>
+                </div>
+                <div class="console-output" id="console-output">
+                    <p style="color: var(--text-secondary);">Waiting for server logs...</p>
+                </div>
+                <div class="console-input-area">
+                    <input type="text" id="console-input" class="console-input" placeholder="Type a command (e.g. /say Hello) and press Enter...">
+                    <button class="console-btn" onclick="sendCommand()">Execute</button>
+                </div>
+            </div>
+
+            <!-- PLAYERS TAB -->
+            <div id="tab-players" class="tab-content">
+                <div class="tab-header">
+                    <h2>Player Management</h2>
+                    <p>Manage currently connected players</p>
+                </div>
+                <div class="players-container">
+                    <table class="player-table">
+                        <thead>
+                            <tr>
+                                <th>Player</th>
+                                <th>Ping</th>
+                                <th>Uptime</th>
+                                <th style="text-align: right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="player-list-body">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                    <div id="players-empty" class="empty-state" style="display: none;">
+                        <h3>No players online</h3>
+                        <p>When someone joins, they will appear here.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SETTINGS TAB -->
+            <div id="tab-settings" class="tab-content">
+                <div class="tab-header">
+                    <h2>Server Settings</h2>
+                    <p>Configure Aurora server parameters</p>
+                </div>
+                <div class="players-container empty-state">
+                    <h3>Coming Soon</h3>
+                    <p>Settings panel will be implemented in the next update.</p>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <script>
+        // Tab Switching Logic
+        function switchTab(tabId, element) {
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            element.classList.add('active');
+            
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.getElementById('tab-' + tabId).classList.add('active');
+        }
+
+        const consoleOutput = document.getElementById('console-output');
+        const consoleInput = document.getElementById('console-input');
+        
+        // Fetch Status & Players periodically
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                if (res.ok) {
+                    const data = await res.json();
+                    document.getElementById('player-count').innerText = data.players;
+                    document.getElementById('protocol-ver').innerText = data.protocol;
+                    document.getElementById('mem-usage').innerText = `${data.memoryMB} MB`;
+                    document.getElementById('uptime').innerText = data.uptime;
+                    
+                    document.getElementById('status-text').innerText = 'Online';
+                    document.getElementById('status-dot').style.backgroundColor = 'var(--success)';
+                    document.getElementById('status-dot').style.boxShadow = '0 0 10px var(--success)';
+                }
+            } catch (e) {
+                document.getElementById('status-text').innerText = 'Offline';
+                document.getElementById('status-dot').style.backgroundColor = 'var(--danger)';
+                document.getElementById('status-dot').style.boxShadow = '0 0 10px var(--danger)';
+            }
+        }
+
+        async function fetchPlayers() {
+            try {
+                const res = await fetch('/api/players');
+                if (res.ok) {
+                    const players = await res.json();
+                    const tbody = document.getElementById('player-list-body');
+                    const empty = document.getElementById('players-empty');
+                    
+                    if (players.length === 0) {
+                        tbody.innerHTML = '';
+                        empty.style.display = 'flex';
+                    } else {
+                        empty.style.display = 'none';
+                        let html = '';
+                        for(let p of players) {
+                            let pingClass = p.ping < 100 ? 'ping-good' : (p.ping < 200 ? 'ping-warn' : 'ping-bad');
+                            html += `
+                            <tr>
+                                <td style="font-weight: 600;">
+                                    <img src="https://minotar.net/helm/${p.username}/32.png" class="player-avatar" onerror="this.src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiBmaWxsPSIjOTk5Ii8+PC9zdmc+'">
+                                    ${p.username}
+                                </td>
+                                <td><span class="${pingClass}">${p.ping} ms</span></td>
+                                <td>${p.uptime}</td>
+                                <td style="text-align: right">
+                                    <button class="btn-kick" onclick="kickPlayer('${p.id}', '${p.username}')">Kick</button>
+                                </td>
+                            </tr>`;
+                        }
+                        tbody.innerHTML = html;
+                    }
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function kickPlayer(id, username) {
+            if (confirm(`Are you sure you want to kick ${username}?`)) {
+                await fetch(`/api/players/${id}/kick`, { method: 'POST' });
+                fetchPlayers();
+            }
+        }
+
+        setInterval(() => {
+            fetchStatus();
+            if (document.getElementById('tab-players').classList.contains('active')) {
+                fetchPlayers();
+            }
+        }, 2000);
+        
+        fetchStatus();
+        fetchPlayers();
+
+        // Connect to SSE Logs
+        const eventSource = new EventSource('/api/logs');
+        
+        eventSource.onmessage = function(event) {
+            if (consoleOutput.innerHTML.includes('Waiting for server logs')) {
+                consoleOutput.innerHTML = ''; // clear initial msg
+            }
+            
+            const p = document.createElement('p');
+            let text = event.data;
+            
+            // Simple coloring
+            if (text.includes('WARNING') || text.includes('WARN')) {
+                p.className = 'log-warn';
+            } else if (text.includes('ERROR') || text.includes('Exception')) {
+                p.className = 'log-error';
+            } else if (text.includes('[Network]')) {
+                p.className = 'log-info';
+            }
+            
+            p.innerText = `[${new Date().toLocaleTimeString()}] ${text}`;
+            consoleOutput.appendChild(p);
+            
+            // Auto scroll if scrolled to bottom
+            if (consoleOutput.scrollHeight - consoleOutput.scrollTop <= consoleOutput.clientHeight + 50) {
+                consoleOutput.scrollTop = consoleOutput.scrollHeight;
+            }
+        };
+
+        // Send Command
+        async function sendCommand() {
+            const cmd = consoleInput.value.trim();
+            if (!cmd) return;
+            
+            consoleInput.value = '';
+            
+            const p = document.createElement('p');
+            p.innerText = `> ${cmd}`;
+            p.style.color = 'white';
+            p.style.fontWeight = 'bold';
+            consoleOutput.appendChild(p);
+            consoleOutput.scrollTop = consoleOutput.scrollHeight;
+            
+            try {
+                await fetch('/api/command', {
+                    method: 'POST',
+                    body: cmd
+                });
+            } catch (e) {
+                console.error("Failed to send command");
+            }
+        }
+
+        consoleInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendCommand();
+            }
+        });
+    </script>
+</body>
+</html>

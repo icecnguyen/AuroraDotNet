@@ -38,7 +38,7 @@ public sealed class TcpServer : IDisposable
                 var clientSocket = await _listener.AcceptAsync(_cts.Token).ConfigureAwait(false);
                 
                 // Construct the connection wrapping the pipeline
-                var connection = new MinecraftConnection(clientSocket);
+                var connection = new MinecraftConnection(clientSocket, _connectionManager);
                 
                 // Add to manager
                 _connectionManager.AddConnection(connection);

@@ -33,3 +33,7 @@ play_types.json
 server_config.json
 *.jsonl
 *.csv
+
+# Editors and Tools
+.vscode/
+node_modules/

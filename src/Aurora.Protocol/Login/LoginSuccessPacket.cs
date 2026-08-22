@@ -23,8 +23,5 @@ public sealed class LoginSuccessPacket : IPacket
         writer.WriteUUID(Uuid);
         writer.WriteString(Username);
         writer.WriteVarInt(0); // 0 Properties
-        
-        // 1.21.2 removed Strict Error Handling, but 1.21.4 client tries to read a UUID here!
-        writer.WriteUUID(Uuid); // Maybe it wants the player UUID again? Or strict error handling is a UUID now?
     }
 }

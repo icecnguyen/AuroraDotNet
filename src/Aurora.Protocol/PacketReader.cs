@@ -56,11 +56,36 @@ public ref struct PacketReader
         return val != 0;
     }
 
+    public byte ReadByte()
+    {
+        if (!Reader.TryRead(out byte val))
+            throw new InvalidOperationException("Incomplete Byte");
+        return val;
+    }
+
     public long ReadLong()
     {
         if (!Reader.TryReadBigEndian(out long val))
             throw new InvalidOperationException("Incomplete Long");
         return val;
+    }
+
+    public double ReadDouble()
+    {
+        Span<byte> span = stackalloc byte[8];
+        if (!Reader.TryCopyTo(span))
+            throw new InvalidOperationException("Incomplete Double");
+        Reader.Advance(8);
+        return System.Buffers.Binary.BinaryPrimitives.ReadDoubleBigEndian(span);
+    }
+
+    public float ReadFloat()
+    {
+        Span<byte> span = stackalloc byte[4];
+        if (!Reader.TryCopyTo(span))
+            throw new InvalidOperationException("Incomplete Float");
+        Reader.Advance(4);
+        return System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(span);
     }
 
     public Guid ReadUUID()
