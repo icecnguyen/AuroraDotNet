@@ -30,12 +30,20 @@ Thumbs.db
 # Other
 config_types.json
 play_types.json
-server_config.json
+proto.json
+protocol.json
 *.jsonl
 *.csv
+test.js
+
+# Docs and unrelated markdown
+AuroraMC*.md
+minecraft_java*.md
 
 # Editors and Tools
 .vscode/
 node_modules/
-tools/VanillaServer/
+tools/
 img/
+benchmarks/
+docs/
