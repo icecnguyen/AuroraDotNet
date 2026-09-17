@@ -122,22 +122,49 @@ public static class ChunkSerializer
         long emptySkyLightMask = 0;
         int skyLightArrayCount = 0;
         
-        for (int i = 0; i < 26; i++)
+        long blockLightMask = 0;
+        long emptyBlockLightMask = 0;
+        int blockLightArrayCount = 0;
+
+        var rawSkyLight = chunk.RawSkyLight;
+        var rawBlockLight = chunk.RawBlockLight;
+
+        Span<bool> hasBlockLightSections = stackalloc bool[24];
+
+        for (int i = 0; i < 24; i++)
         {
-            if (i > 0 && i < 25)
+            int sectionBit = i + 1;
+            skyLightMask |= (1L << sectionBit);
+            skyLightArrayCount++;
+
+            // Check if this section has block light
+            int sectionOffset = i * 4096;
+            bool hasBlockLight = false;
+            for (int k = 0; k < 4096; k++)
             {
-                skyLightMask |= (1L << i);
-                skyLightArrayCount++;
+                if (rawBlockLight[sectionOffset + k] > 0)
+                {
+                    hasBlockLight = true;
+                    break;
+                }
+            }
+
+            if (hasBlockLight)
+            {
+                blockLightMask |= (1L << sectionBit);
+                blockLightArrayCount++;
+                hasBlockLightSections[i] = true;
             }
             else
             {
-                emptySkyLightMask |= (1L << i);
+                emptyBlockLightMask |= (1L << sectionBit);
             }
         }
-        
-        long blockLightMask = 0;
-        long emptyBlockLightMask = (1L << 26) - 1;
-        int blockLightArrayCount = 0;
+
+        // Section 0 (below bedrock) has no light
+        emptySkyLightMask |= 1L;
+        emptyBlockLightMask |= 1L;
+        emptyBlockLightMask |= (1L << 25);
 
         WriteVarInt(ms, 1); 
         BinaryPrimitives.WriteInt64BigEndian(longBytes, skyLightMask); ms.Write(longBytes);
@@ -153,7 +180,6 @@ public static class ChunkSerializer
         
         WriteVarInt(ms, skyLightArrayCount);
         
-        var rawSkyLight = chunk.RawSkyLight;
         Span<byte> sectionBuffer = stackalloc byte[2048];
         for (int i = 0; i < 24; i++)
         {
@@ -171,6 +197,21 @@ public static class ChunkSerializer
         }
         
         WriteVarInt(ms, blockLightArrayCount);
+        for (int i = 0; i < 24; i++)
+        {
+            if (!hasBlockLightSections[i]) continue;
+
+            WriteVarInt(ms, 2048);
+            int sectionOffset = i * 4096;
+
+            for (int blockIndex = 0; blockIndex < 2048; blockIndex++)
+            {
+                byte light1 = rawBlockLight[sectionOffset + blockIndex * 2];
+                byte light2 = rawBlockLight[sectionOffset + blockIndex * 2 + 1];
+                sectionBuffer[blockIndex] = (byte)((light1 & 0x0F) | ((light2 & 0x0F) << 4));
+            }
+            ms.Write(sectionBuffer);
+        }
 
         return ms.ToArray();
     }

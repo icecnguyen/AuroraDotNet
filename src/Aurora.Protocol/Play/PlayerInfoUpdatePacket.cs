@@ -4,7 +4,7 @@ namespace Aurora.Protocol.Play;
 
 public class PlayerInfoUpdatePacket : IPacket
 {
-    public int PacketId => 0x3E; // Clientbound in 1.21.4
+    public int PacketId => 0x40; // 1.21.4 packet_player_info (protocol_id 64 = 0x40)
 
     public byte Actions { get; set; }
 #pragma warning disable CA1819
@@ -80,8 +80,14 @@ public class PlayerInfoUpdatePacket : IPacket
                 }
             }
             
-            // Bit 6: update_list_order
+            // Bit 6: update_hat
             if ((Actions & 0x40) != 0)
+            {
+                writer.WriteBool(false); // showHat
+            }
+
+            // Bit 7: update_list_order
+            if ((Actions & 0x80) != 0)
             {
                 writer.WriteVarInt(0); // default list order
             }

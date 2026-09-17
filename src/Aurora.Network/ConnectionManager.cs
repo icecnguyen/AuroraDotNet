@@ -27,7 +27,7 @@ public sealed class ConnectionManager : IDisposable
         connection.OnDisconnected -= OnConnectionDisconnected;
     }
 
-    public IEnumerable<MinecraftConnection> Players => _connections.Values;
+    public IEnumerable<MinecraftConnection> Players => System.Linq.Enumerable.Where(_connections.Values, c => c.CurrentState == 4);
 
     public void BroadcastPacket(Aurora.Protocol.IPacket packet, Guid? except = null)
     {

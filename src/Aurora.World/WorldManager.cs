@@ -24,7 +24,7 @@ public sealed class WorldManager
         return _activeChunks.GetOrAdd(pos, p => 
         {
             var chunk = _generator.GenerateChunk(p.X, p.Z);
-            Aurora.World.Lighting.LightEngine.InitializeSkyLight(chunk);
+            Aurora.World.Lighting.LightEngine.InitializeLighting(chunk);
             return chunk;
         });
     }
@@ -56,5 +56,48 @@ public sealed class WorldManager
             return 0; // Air if chunk not loaded
             
         return chunk.GetBlockState(x, y, z);
+    }
+
+    private (double X, double Y, double Z)? _cachedSpawnPosition;
+
+    /// <summary>
+    /// Searches outwards from (0, 0) for a solid, land-based spawn position above sea level (Y >= 64).
+    /// </summary>
+    public (double X, double Y, double Z) FindSpawnPosition()
+    {
+        if (_cachedSpawnPosition.HasValue)
+            return _cachedSpawnPosition.Value;
+
+        for (int radius = 0; radius <= 8; radius++)
+        {
+            for (int dx = -radius; dx <= radius; dx++)
+            {
+                for (int dz = -radius; dz <= radius; dz++)
+                {
+                    if (Math.Max(Math.Abs(dx), Math.Abs(dz)) != radius)
+                        continue;
+
+                    var chunk = GetOrGenerateChunk(dx, dz);
+                    for (int y = 140; y >= 64; y--)
+                    {
+                        ushort block = chunk.GetBlockState(8, y, 8);
+                        if (block == Block.GrassBlock || block == Block.Sand || block == Block.Podzol || block == Block.Stone || block == Block.SnowBlock)
+                        {
+                            if (chunk.GetBlockState(8, y + 1, 8) == Block.Air && chunk.GetBlockState(8, y + 2, 8) == Block.Air)
+                            {
+                                double worldX = dx * 16 + 8.5;
+                                double worldY = y + 1.0;
+                                double worldZ = dz * 16 + 8.5;
+                                _cachedSpawnPosition = (worldX, worldY, worldZ);
+                                return _cachedSpawnPosition.Value;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        _cachedSpawnPosition = (0.5, 75.0, 0.5);
+        return _cachedSpawnPosition.Value;
     }
 }

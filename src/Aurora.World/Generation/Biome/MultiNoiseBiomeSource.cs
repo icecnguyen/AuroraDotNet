@@ -5,6 +5,7 @@ namespace Aurora.World.Generation.Biome;
 
 /// <summary>
 /// A BiomeSource that uses MultiNoise spatial mapping.
+/// Biome climate parameters and sampling logic are ported and adapted from Pumpkin-MC and vanilla Minecraft.
 /// </summary>
 public sealed class MultiNoiseBiomeSource
 {
@@ -20,45 +21,105 @@ public sealed class MultiNoiseBiomeSource
     {
         var mappings = new List<KeyValuePair<ParameterPoint, BiomeType>>
         {
-            // Ocean: High moisture, low continentalness
+            // 1. Deep Ocean (Continentalness < -0.45)
             new(new ParameterPoint(
                 new Parameter(-1.0, 1.0),
                 new Parameter(-1.0, 1.0),
-                new Parameter(-1.0, -0.2), // Deep water
+                new Parameter(-1.5, -0.45), // Deep abyss
+                new Parameter(-1.0, 1.0),
+                new Parameter(-1.0, 1.0),
+                new Parameter(-1.0, 1.0),
+                0.0), BiomeType.DeepOcean),
+
+            // 2. Shallow Ocean (Continentalness -0.45 to -0.15)
+            new(new ParameterPoint(
+                new Parameter(-1.0, 1.0),
+                new Parameter(-1.0, 1.0),
+                new Parameter(-0.45, -0.15), // Shelf / shallow ocean
                 new Parameter(-1.0, 1.0),
                 new Parameter(-1.0, 1.0),
                 new Parameter(-1.0, 1.0),
                 0.0), BiomeType.Ocean),
-                
-            // Plains: Default fallback
+
+            // 3. Beach (Continentalness -0.15 to -0.02)
             new(new ParameterPoint(
-                new Parameter(-0.5, 0.5),
-                new Parameter(-0.5, 0.5),
-                new Parameter(-0.2, 1.0), // Land
+                new Parameter(-0.3, 0.8),
+                new Parameter(-0.5, 0.8),
+                new Parameter(-0.15, -0.02), // Coastline
                 new Parameter(-1.0, 1.0),
                 new Parameter(-1.0, 1.0),
                 new Parameter(-1.0, 1.0),
-                0.0), BiomeType.Plains),
-                
-            // Desert: Hot, dry
+                0.0), BiomeType.Beach),
+
+            // 4. Desert (Hot & Dry inland)
             new(new ParameterPoint(
-                new Parameter(0.5, 1.0),
-                new Parameter(-1.0, -0.5),
-                new Parameter(-0.2, 1.0),
+                new Parameter(0.5, 1.5),
+                new Parameter(-1.5, -0.15),
+                new Parameter(-0.02, 1.5),
                 new Parameter(-1.0, 1.0),
                 new Parameter(-1.0, 1.0),
                 new Parameter(-1.0, 1.0),
                 0.0), BiomeType.Desert),
-                
-            // Mountains: High weirdness or specific erosion/continentalness
+
+            // 5. Jagged Peaks (High inland peaks, low erosion, high weirdness)
             new(new ParameterPoint(
+                new Parameter(-1.5, 0.3),
+                new Parameter(-1.0, 1.0),
+                new Parameter(0.1, 1.5),
+                new Parameter(-1.5, -0.4), // Steep jagged erosion
+                new Parameter(-1.0, 1.0),
+                new Parameter(0.3, 1.5),  // Ridge
+                0.0), BiomeType.JaggedPeaks),
+
+            // 6. Snowy Slopes (Cold mountains)
+            new(new ParameterPoint(
+                new Parameter(-1.5, -0.4),
+                new Parameter(-1.0, 1.0),
+                new Parameter(0.05, 1.5),
+                new Parameter(-0.4, 0.3),
                 new Parameter(-1.0, 1.0),
                 new Parameter(-1.0, 1.0),
-                new Parameter(-0.2, 1.0),
-                new Parameter(-1.0, -0.5), // High peaks
+                0.0), BiomeType.SnowySlopes),
+
+            // 7. Taiga (Cool & Humid coniferous forest)
+            new(new ParameterPoint(
+                new Parameter(-0.5, -0.05),
+                new Parameter(0.05, 1.0),
+                new Parameter(-0.02, 1.5),
                 new Parameter(-1.0, 1.0),
-                new Parameter(0.5, 1.0), // Weirdness -> Peaks
-                0.0), BiomeType.Mountains)
+                new Parameter(-1.0, 1.0),
+                new Parameter(-1.0, 1.0),
+                0.0), BiomeType.Taiga),
+
+            // 8. Birch Forest (Temperate, moderate humidity, specific weirdness)
+            new(new ParameterPoint(
+                new Parameter(0.0, 0.45),
+                new Parameter(0.1, 0.45),
+                new Parameter(-0.02, 1.5),
+                new Parameter(-0.5, 0.5),
+                new Parameter(-1.0, 1.0),
+                new Parameter(0.2, 1.0),
+                0.0), BiomeType.BirchForest),
+
+            // 9. Forest (Lush temperate wooded land)
+            new(new ParameterPoint(
+                new Parameter(-0.15, 0.4),
+                new Parameter(0.2, 1.0),
+                new Parameter(-0.02, 1.5),
+                new Parameter(-1.0, 1.0),
+                new Parameter(-1.0, 1.0),
+                new Parameter(-1.0, 1.0),
+                0.0), BiomeType.Forest),
+
+            // 10. Plains (Balanced temperate open rolling fields)
+            new(new ParameterPoint(
+                new Parameter(-0.2, 0.4),
+                new Parameter(-0.35, 0.2),
+                new Parameter(-0.02, 1.5),
+                new Parameter(-1.0, 1.0),
+                new Parameter(-1.0, 1.0),
+                new Parameter(-1.0, 1.0),
+                0.0), BiomeType.Plains)
         };
         return new MultiNoiseBiomeSource(mappings);
     }

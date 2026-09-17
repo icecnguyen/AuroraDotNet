@@ -21,7 +21,7 @@ sealed class Program
         Logger = new EventConsoleWriter(Console.Out);
         Console.SetOut(Logger);
 
-        Console.WriteLine("Starting AuroraDotNet (26.2 Protocol Support)...");
+        Console.WriteLine("Starting AuroraDotNet (1.21.4 Protocol Support)...");
 
         var builder = WebApplication.CreateBuilder(args);
         builder.Services.AddCors();
@@ -47,6 +47,7 @@ sealed class Program
             return new { 
                 Players = System.Linq.Enumerable.Count(connectionManager.Players),
                 Status = "Online",
+                Version = "1.21.4",
                 Protocol = 768,
                 MemoryMB = process.WorkingSet64 / 1024 / 1024,
                 Uptime = $"{(int)uptime.TotalHours:D2}:{uptime.Minutes:D2}:{uptime.Seconds:D2}"

@@ -32,6 +32,7 @@ config_types.json
 play_types.json
 proto.json
 protocol.json
+server_config.json
 *.jsonl
 *.csv
 test.js

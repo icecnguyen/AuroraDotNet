@@ -8,9 +8,17 @@ public enum BiomeType : int
 {
     None = 0,
     Plains = 1,
-    Mountains = 2,
-    Desert = 3,
-    Ocean = 4
+    Forest = 2,
+    BirchForest = 3,
+    Taiga = 4,
+    SnowySlopes = 5,
+    JaggedPeaks = 6,
+    Desert = 7,
+    Beach = 8,
+    Ocean = 9,
+    DeepOcean = 10,
+    River = 11,
+    Mountains = 12
 }
 
 /// <summary>

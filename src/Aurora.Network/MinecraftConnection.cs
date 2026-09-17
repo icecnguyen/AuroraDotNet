@@ -1,11 +1,14 @@
 using System;
 using System.Buffers;
+using System.Collections.Generic;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
+using Aurora.Core.Math;
 
 namespace Aurora.Network;
 
@@ -23,15 +26,14 @@ public sealed class MinecraftConnection : IDisposable
     private readonly Socket _socket;
     private readonly CancellationTokenSource _cts = new();
     
-    // Using IDuplexPipe to abstract the connection's stream
+    // Using Pipe for receiving and Channel for thread-safe concurrent sending
     private readonly Pipe _receivePipe;
-    private readonly Pipe _sendPipe;
+    private readonly Channel<byte[]> _sendChannel = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
 
     public Guid Id { get; } = Guid.NewGuid();
     public EndPoint? RemoteEndPoint { get; }
     
     public PipeReader Reader => _receivePipe.Reader;
-    public PipeWriter Writer => _sendPipe.Writer;
 
     // Use a numeric state (0 = Handshake, 1 = Status, 2 = Login, 3 = Config, 4 = Play)
     public int CurrentState { get; set; } // Handshake
@@ -53,8 +55,90 @@ public sealed class MinecraftConnection : IDisposable
 
     public event EventHandler<ConnectionEventArgs>? OnDisconnected;
 
+    public int ViewDistance { get; set; } = 8;
+    private readonly HashSet<ChunkPosition> _loadedChunks = new();
+
     private readonly ConnectionManager _connectionManager;
     private readonly Aurora.World.WorldManager _worldManager;
+
+    private static void WriteVarIntToStream(System.IO.MemoryStream ms, int value)
+    {
+        uint uval = (uint)value;
+        while ((uval & ~0x7Fu) != 0)
+        {
+            ms.WriteByte((byte)((uval & 0x7F) | 0x80));
+            uval >>= 7;
+        }
+        ms.WriteByte((byte)uval);
+    }
+
+    private void SendCenterViewPosition(int chunkX, int chunkZ)
+    {
+        using var ms = new System.IO.MemoryStream();
+        WriteVarIntToStream(ms, chunkX);
+        WriteVarIntToStream(ms, chunkZ);
+        SendPacket(new Aurora.Protocol.Play.RawPacket(0x58, ms.ToArray()));
+    }
+
+    private void SendViewDistance(int radius)
+    {
+        using var ms = new System.IO.MemoryStream();
+        WriteVarIntToStream(ms, radius);
+        SendPacket(new Aurora.Protocol.Play.RawPacket(0x59, ms.ToArray()));
+    }
+
+    private void SendChunk(int cx, int cz)
+    {
+        var chunk = _worldManager.GetOrGenerateChunk(cx, cz);
+        var chunkDataBytes = Aurora.World.ChunkSerializer.Serialize(chunk);
+        var lightDataBytes = Aurora.World.ChunkSerializer.SerializeLight(chunk);
+        var chunkPacket = new Aurora.Protocol.Play.ChunkDataPacket
+        {
+            X = cx,
+            Z = cz,
+            ChunkData = chunkDataBytes,
+            LightData = lightDataBytes
+        };
+        SendPacket(chunkPacket);
+    }
+
+    private void UpdatePlayerChunks(int centerChunkX, int centerChunkZ)
+    {
+        SendCenterViewPosition(centerChunkX, centerChunkZ);
+
+        var neededChunks = new List<(int X, int Z, int DistSq)>();
+        for (int cx = centerChunkX - ViewDistance; cx <= centerChunkX + ViewDistance; cx++)
+        {
+            for (int cz = centerChunkZ - ViewDistance; cz <= centerChunkZ + ViewDistance; cz++)
+            {
+                var pos = new ChunkPosition(cx, cz);
+                if (!_loadedChunks.Contains(pos))
+                {
+                    int dx = cx - centerChunkX;
+                    int dz = cz - centerChunkZ;
+                    neededChunks.Add((cx, cz, dx * dx + dz * dz));
+                }
+            }
+        }
+
+        neededChunks.Sort((a, b) => a.DistSq.CompareTo(b.DistSq));
+
+        // High-speed parallel pre-generation across CPU cores
+        Parallel.ForEach(neededChunks, item =>
+        {
+            if (!_cts.IsCancellationRequested && CurrentState == 4)
+            {
+                _worldManager.GetOrGenerateChunk(item.X, item.Z);
+            }
+        });
+
+        foreach (var item in neededChunks)
+        {
+            if (_cts.IsCancellationRequested || CurrentState != 4) break;
+            _loadedChunks.Add(new ChunkPosition(item.X, item.Z));
+            SendChunk(item.X, item.Z);
+        }
+    }
 
     public MinecraftConnection(Socket socket, ConnectionManager connectionManager, Aurora.World.WorldManager worldManager)
     {
@@ -65,7 +149,6 @@ public sealed class MinecraftConnection : IDisposable
         RemoteEndPoint = _socket.RemoteEndPoint;
 
         _receivePipe = new Pipe();
-        _sendPipe = new Pipe();
     }
 
     public void StartProcessing()
@@ -113,19 +196,18 @@ public sealed class MinecraftConnection : IDisposable
         {
             while (!_cts.Token.IsCancellationRequested)
             {
-                var readResult = await _sendPipe.Reader.ReadAsync(_cts.Token).ConfigureAwait(false);
-                var buffer = readResult.Buffer;
-
-                if (!buffer.IsEmpty)
+                if (await _sendChannel.Reader.WaitToReadAsync(_cts.Token).ConfigureAwait(false))
                 {
-                    var arraySegment = GetArray(buffer);
-                    await _socket.SendAsync(arraySegment, SocketFlags.None, _cts.Token).ConfigureAwait(false);
-                    _sendPipe.Reader.AdvanceTo(buffer.End);
-                }
-
-                if (readResult.IsCompleted)
-                {
-                    break;
+                    while (_sendChannel.Reader.TryRead(out var packetBytes))
+                    {
+                        int offset = 0;
+                        while (offset < packetBytes.Length)
+                        {
+                            int sent = await _socket.SendAsync(packetBytes.AsMemory(offset), SocketFlags.None, _cts.Token).ConfigureAwait(false);
+                            if (sent == 0) break;
+                            offset += sent;
+                        }
+                    }
                 }
             }
         }
@@ -133,66 +215,72 @@ public sealed class MinecraftConnection : IDisposable
         catch (SocketException) { }
         finally
         {
-            await _sendPipe.Reader.CompleteAsync().ConfigureAwait(false);
             Disconnect();
         }
     }
 
-    private static ArraySegment<byte> GetArray(ReadOnlySequence<byte> buffer)
-    {
-        if (buffer.IsSingleSegment && MemoryMarshal.TryGetArray(buffer.First, out var segment))
-        {
-            return segment;
-        }
-        return new ArraySegment<byte>(buffer.ToArray());
-    }
-
     private async Task ProcessPacketsAsync()
     {
-        while (!_cts.Token.IsCancellationRequested)
+        try
         {
-            var result = await _receivePipe.Reader.ReadAsync(_cts.Token).ConfigureAwait(false);
-            var buffer = result.Buffer;
-
-            if (buffer.IsEmpty && result.IsCompleted)
+            while (!_cts.Token.IsCancellationRequested)
             {
-                break;
-            }
+                var result = await _receivePipe.Reader.ReadAsync(_cts.Token).ConfigureAwait(false);
+                var buffer = result.Buffer;
 
-            // Try to read packet length
-            var sequenceReader = new SequenceReader<byte>(buffer);
-            if (!Aurora.Protocol.VarInt.TryRead(ref sequenceReader, out int length, out int lengthBytes))
-            {
-                _receivePipe.Reader.AdvanceTo(buffer.Start, buffer.End);
-                return; // Need more data
-            }
+                while (true)
+                {
+                    if (buffer.IsEmpty)
+                        break;
 
-            if (buffer.Length < lengthBytes + length)
-            {
-                _receivePipe.Reader.AdvanceTo(buffer.Start, buffer.End);
-                return; // Need more data
-            }
+                    // Try to read packet length
+                    var sequenceReader = new SequenceReader<byte>(buffer);
+                    if (!Aurora.Protocol.VarInt.TryRead(ref sequenceReader, out int length, out int lengthBytes))
+                    {
+                        break; // Need more data from pipe
+                    }
 
-            // We have a full packet
-            var packetSlice = buffer.Slice(lengthBytes, length);
-            var nextPacketStart = buffer.GetPosition(lengthBytes + length);
+                    if (buffer.Length < lengthBytes + length)
+                    {
+                        break; // Need more data for full packet payload
+                    }
 
-            try
-            {
-                HandlePacket(packetSlice);
-            }
+                    // We have a full packet
+                    var packetSlice = buffer.Slice(lengthBytes, length);
+                    buffer = buffer.Slice(lengthBytes + length);
+
+                    try
+                    {
+                        HandlePacket(packetSlice);
+                    }
 #pragma warning disable CA1031
-            catch (Exception ex)
-            {
-#pragma warning disable CA1303
-                Console.WriteLine($"[Network] Packet processing error: {ex.Message}");
-#pragma warning restore CA1303
-                Disconnect();
-                return;
-            }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[Network] Packet processing error: {ex.Message}");
+                        Disconnect();
+                        return;
+                    }
 #pragma warning restore CA1031
+                }
 
-            _receivePipe.Reader.AdvanceTo(nextPacketStart);
+                _receivePipe.Reader.AdvanceTo(buffer.Start, buffer.End);
+
+                if (result.IsCompleted)
+                {
+                    break;
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+#pragma warning disable CA1031
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Network] ProcessPackets exception: {ex.Message}");
+        }
+#pragma warning restore CA1031
+        finally
+        {
+            Disconnect();
         }
     }
 
@@ -223,10 +311,11 @@ public sealed class MinecraftConnection : IDisposable
                 var req = new Aurora.Protocol.Status.StatusRequestPacket();
                 req.Read(ref reader);
                 
-                var protocolStr = ClientProtocolVersion > 0 ? ClientProtocolVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) : "767";
+                int onlineCount = System.Linq.Enumerable.Count(_connectionManager.Players);
+                var protocolStr = ClientProtocolVersion > 0 ? ClientProtocolVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) : "768";
                 var res = new Aurora.Protocol.Status.StatusResponsePacket
                 {
-                    JsonResponse = "{\"version\":{\"name\":\"Aurora 26.2\",\"protocol\":" + protocolStr + "},\"players\":{\"max\":100,\"online\":0},\"description\":{\"text\":\"AuroraDotNet Server\"}}"
+                    JsonResponse = "{\"version\":{\"name\":\"Aurora 1.21.4\",\"protocol\":" + protocolStr + "},\"players\":{\"max\":100,\"online\":" + onlineCount.ToString(System.Globalization.CultureInfo.InvariantCulture) + "},\"description\":{\"text\":\"§b§lAuroraDotNet §8» §fNext-Gen C# Minecraft Server\\n§7Minecraft §a1.21.4 §7• §eNative WorldGen §7• §dActive\"}}"
                 };
                 SendPacket(res);
             }
@@ -366,109 +455,109 @@ public sealed class MinecraftConnection : IDisposable
 #pragma warning restore CA1303
                 CurrentState = 4; // Play
                 
-                // 1. Send Join Game
-                var joinGame = new Aurora.Protocol.Play.JoinGamePacket { EntityId = this.EntityId };
+                // 1. Send Join Game with configured View Distance
+                var joinGame = new Aurora.Protocol.Play.JoinGamePacket 
+                { 
+                    EntityId = this.EntityId,
+                    ViewDistance = this.ViewDistance,
+                    SimulationDistance = this.ViewDistance
+                };
                 SendPacket(joinGame);
                 
-                // 2. Send Center View Position
-                // In 1.21.4, Update View Position (0x58) uses VarInt for X and Z.
-                // VarInt(0) is 1 byte (0x00). So two VarInts(0, 0) is just 2 bytes.
-                var centerPos = new Aurora.Protocol.Play.RawPacket(0x58, new byte[] { 0, 0 }); // X=0, Z=0
-                // Send 49 initial chunks (7x7) based on player's spawn position (0, 0)
-                // TODO: Make this dynamic based on view distance
-                for (int cx = -3; cx <= 3; cx++)
+                // 2. Send Player Info Update (0x40) for local player so client initializes game mode & profile
+                var myInfo = new Aurora.Protocol.Play.PlayerInfoUpdatePacket
                 {
-                    for (int cz = -3; cz <= 3; cz++)
+                    Actions = 0x1D, // add_player(1) | gamemode(4) | listed(8) | latency(16)
+                    Entries = new[]
                     {
-                        var chunk = _worldManager.GetOrGenerateChunk(cx, cz);
-                        var chunkDataBytes = Aurora.World.ChunkSerializer.Serialize(chunk);
-                        var lightDataBytes = Aurora.World.ChunkSerializer.SerializeLight(chunk);
-                        var chunkPacket = new Aurora.Protocol.Play.ChunkDataPacket
+                        new Aurora.Protocol.Play.PlayerInfoEntry
                         {
-                            X = cx,
-                            Z = cz,
-                            ChunkData = chunkDataBytes,
-                            LightData = lightDataBytes
-                        };
-                        SendPacket(chunkPacket);
+                            UUID = this.Id,
+                            Name = this.Username,
+                            GameMode = 1,
+                            Listed = true,
+                            Ping = 0,
+                            HasDisplayName = false
+                        }
                     }
-                }
-                
-                // 4. Send Player Position to dismiss "Joining world..." screen
-                var playerPos = new Aurora.Protocol.Play.PlayerPositionPacket();
+                };
+                SendPacket(myInfo);
+                _connectionManager.BroadcastPacket(myInfo, except: this.Id);
+
+                // 3. Send View Distance (0x59)
+                SendViewDistance(this.ViewDistance);
+
+                // 4. Find solid spawn on land
+                var spawn = _worldManager.FindSpawnPosition();
+                this.X = spawn.X;
+                this.Y = spawn.Y;
+                this.Z = spawn.Z;
+
+                int spawnChunkX = (int)Math.Floor(this.X) >> 4;
+                int spawnChunkZ = (int)Math.Floor(this.Z) >> 4;
+
+                // 5. Send Center View Position (0x58)
+                SendCenterViewPosition(spawnChunkX, spawnChunkZ);
+
+                // 6. Send Player Position (0x42) IMMEDIATELY to dismiss "Joining world..." screen!
+                var playerPos = new Aurora.Protocol.Play.PlayerPositionPacket
+                {
+                    TeleportId = 1,
+                    X = this.X,
+                    Y = this.Y,
+                    Z = this.Z
+                };
                 SendPacket(playerPos);
                 
-                // 5. Spawn existing players for this player, and spawn this player for others
+                // 7. Tell this player about other online players
+                foreach (var other in _connectionManager.Players)
                 {
-                    // Create info for myself
-                    var myInfo = new Aurora.Protocol.Play.PlayerInfoUpdatePacket
+                    if (other.Id == this.Id || other.CurrentState != 4) continue;
+                    
+                    var otherInfo = new Aurora.Protocol.Play.PlayerInfoUpdatePacket
                     {
-                        // 0: add_player(1), 1: init_chat(2), 2: gamemode(4), 3: listed(8), 4: latency(16), 5: display_name(32). 
-                        // 1 + 4 + 8 + 16 = 29 = 0x1D
-                        Actions = 0x1D, 
+                        Actions = 0x1D,
                         Entries = new[]
                         {
                             new Aurora.Protocol.Play.PlayerInfoEntry
                             {
-                                UUID = this.Id,
-                                Name = this.Username,
+                                UUID = other.Id,
+                                Name = other.Username,
                                 GameMode = 1,
                                 Listed = true,
-                                Ping = 0,
+                                Ping = (int)other.Ping,
                                 HasDisplayName = false
                             }
                         }
                     };
+                    SendPacket(otherInfo);
                     
-                    var mySpawn = new Aurora.Protocol.Play.SpawnEntityPacket
+                    var otherSpawn = new Aurora.Protocol.Play.SpawnEntityPacket
                     {
-                        EntityId = this.EntityId,
-                        EntityUUID = this.Id,
-                        Type = 147, // Player
-                        X = this.X, Y = this.Y, Z = this.Z,
-                        Pitch = this.Pitch, Yaw = this.Yaw, HeadYaw = this.Yaw
+                        EntityId = other.EntityId,
+                        EntityUUID = other.Id,
+                        Type = 147,
+                        X = other.X, Y = other.Y, Z = other.Z,
+                        Pitch = other.Pitch, Yaw = other.Yaw, HeadYaw = other.Yaw
                     };
-                    
-                    // Tell everyone about me
-                    _connectionManager.BroadcastPacket(myInfo, except: this.Id);
-                    _connectionManager.BroadcastPacket(mySpawn, except: this.Id);
-                    
-                    // Tell me about everyone
-                    foreach (var other in _connectionManager.Players)
-                    {
-                        if (other.Id == this.Id || other.CurrentState != 4) continue;
-                        
-                        var otherInfo = new Aurora.Protocol.Play.PlayerInfoUpdatePacket
-                        {
-                            Actions = 0x1D,
-                            Entries = new[]
-                            {
-                                new Aurora.Protocol.Play.PlayerInfoEntry
-                                {
-                                    UUID = other.Id,
-                                    Name = other.Username,
-                                    GameMode = 1,
-                                    Listed = true,
-                                    Ping = (int)other.Ping,
-                                    HasDisplayName = false
-                                }
-                            }
-                        };
-                        SendPacket(otherInfo);
-                        
-                        var otherSpawn = new Aurora.Protocol.Play.SpawnEntityPacket
-                        {
-                            EntityId = other.EntityId,
-                            EntityUUID = other.Id,
-                            Type = 147,
-                            X = other.X, Y = other.Y, Z = other.Z,
-                            Pitch = other.Pitch, Yaw = other.Yaw, HeadYaw = other.Yaw
-                        };
-                        SendPacket(otherSpawn);
-                    }
+                    SendPacket(otherSpawn);
                 }
 
-                // 6. Start Keep Alive Task
+                // Announce this player entity to others
+                var mySpawn = new Aurora.Protocol.Play.SpawnEntityPacket
+                {
+                    EntityId = this.EntityId,
+                    EntityUUID = this.Id,
+                    Type = 147,
+                    X = this.X, Y = this.Y, Z = this.Z,
+                    Pitch = this.Pitch, Yaw = this.Yaw, HeadYaw = this.Yaw
+                };
+                _connectionManager.BroadcastPacket(mySpawn, except: this.Id);
+
+                // 8. Stream chunks around spawn asynchronously in background so client receives them smoothly
+                _ = System.Threading.Tasks.Task.Run(() => UpdatePlayerChunks(spawnChunkX, spawnChunkZ));
+
+                // 9. Start Keep Alive Task
                 _keepAliveTask = System.Threading.Tasks.Task.Run(KeepAliveLoop);
             }
             else
@@ -491,7 +580,19 @@ public sealed class MinecraftConnection : IDisposable
             {
                 var pos = new Aurora.Protocol.Play.SetPlayerPositionPacket();
                 pos.Read(ref reader);
+                
+                int oldChunkX = (int)Math.Floor(X) >> 4;
+                int oldChunkZ = (int)Math.Floor(Z) >> 4;
+
                 X = pos.X; Y = pos.Y; Z = pos.Z;
+
+                int newChunkX = (int)Math.Floor(X) >> 4;
+                int newChunkZ = (int)Math.Floor(Z) >> 4;
+
+                if (newChunkX != oldChunkX || newChunkZ != oldChunkZ)
+                {
+                    UpdatePlayerChunks(newChunkX, newChunkZ);
+                }
                 
                 _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityTeleportPacket
                 {
@@ -504,8 +605,20 @@ public sealed class MinecraftConnection : IDisposable
             {
                 var posRot = new Aurora.Protocol.Play.SetPlayerPositionAndRotationPacket();
                 posRot.Read(ref reader);
+                
+                int oldChunkX = (int)Math.Floor(X) >> 4;
+                int oldChunkZ = (int)Math.Floor(Z) >> 4;
+
                 X = posRot.X; Y = posRot.Y; Z = posRot.Z;
                 Yaw = posRot.Yaw; Pitch = posRot.Pitch;
+
+                int newChunkX = (int)Math.Floor(X) >> 4;
+                int newChunkZ = (int)Math.Floor(Z) >> 4;
+
+                if (newChunkX != oldChunkX || newChunkZ != oldChunkZ)
+                {
+                    UpdatePlayerChunks(newChunkX, newChunkZ);
+                }
                 
                 _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityTeleportPacket
                 {
@@ -655,14 +768,12 @@ public sealed class MinecraftConnection : IDisposable
         
         var packetData = arrayBuffer.WrittenSpan;
         
-        // Write length prefix + packet data to actual pipe
-        Aurora.Protocol.VarInt.Write(_sendPipe.Writer, packetData.Length);
-        var span = _sendPipe.Writer.GetSpan(packetData.Length);
-        packetData.CopyTo(span);
-        _sendPipe.Writer.Advance(packetData.Length);
+        using var ms = new System.IO.MemoryStream();
+        WriteVarIntToStream(ms, packetData.Length);
+        ms.Write(packetData);
         
-        // Fire and forget flush
-        var _ = _sendPipe.Writer.FlushAsync().AsTask();
+        byte[] fullBytes = ms.ToArray();
+        _sendChannel.Writer.TryWrite(fullBytes);
     }
 
     public void Disconnect()

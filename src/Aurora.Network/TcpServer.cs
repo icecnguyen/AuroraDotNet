@@ -39,6 +39,7 @@ public sealed class TcpServer : IDisposable
             while (!_cts.Token.IsCancellationRequested)
             {
                 var clientSocket = await _listener.AcceptAsync(_cts.Token).ConfigureAwait(false);
+                clientSocket.NoDelay = true;
                 
                 // Construct the connection wrapping the pipeline
                 var connection = new MinecraftConnection(clientSocket, _connectionManager, _worldManager);

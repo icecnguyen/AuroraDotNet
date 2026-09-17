@@ -32,7 +32,7 @@ public class JoinGamePacket : IPacket
     public byte GameMode { get; set; } = 1; // Creative
     public byte PreviousGameMode { get; set; } = (byte)255;
     public bool IsDebug { get; set; }
-    public bool IsFlat { get; set; } = true;
+    public bool IsFlat { get; set; }
     public bool HasDeathLocation { get; set; }
     public int PortalCooldown { get; set; }
     public int SeaLevel { get; set; } = 63;

@@ -11,19 +11,15 @@ public static class FlatWorldGenerator
     {
         var chunk = new Chunk(new ChunkPosition(chunkX, chunkZ));
 
-        // Generate chunk with 16-block boundaries to allow Single Valued Palette optimization
+        // Generate standard superflat: 1 bedrock, 2 dirt, 1 grass
         for (int x = 0; x < 16; x++)
         {
             for (int z = 0; z < 16; z++)
             {
-                // Section 0 (-64 to -49)
-                for (int y = -64; y < -48; y++) chunk.SetBlockState(x, y, z, Block.Bedrock);
-                
-                // Section 1 (-48 to -33)
-                for (int y = -48; y < -32; y++) chunk.SetBlockState(x, y, z, Block.Dirt);
-                
-                // Section 2 (-32 to -17)
-                for (int y = -32; y < -16; y++) chunk.SetBlockState(x, y, z, Block.GrassBlock);
+                chunk.SetBlockState(x, -64, z, Block.Bedrock);
+                chunk.SetBlockState(x, -63, z, Block.Dirt);
+                chunk.SetBlockState(x, -62, z, Block.Dirt);
+                chunk.SetBlockState(x, -61, z, Block.GrassBlock);
             }
         }
 
