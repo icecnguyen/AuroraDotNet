@@ -25,6 +25,12 @@ public sealed class ConnectionManager : IDisposable
         var connection = e.Connection;
         _connections.TryRemove(connection.Id, out _);
         connection.OnDisconnected -= OnConnectionDisconnected;
+
+        if (connection.CurrentState == 4)
+        {
+            BroadcastPacket(new Aurora.Protocol.Play.RemoveEntitiesPacket(connection.EntityId));
+            BroadcastPacket(new Aurora.Protocol.Play.PlayerRemovePacket(connection.Id));
+        }
     }
 
     public IEnumerable<MinecraftConnection> Players => System.Linq.Enumerable.Where(_connections.Values, c => c.CurrentState == 4);

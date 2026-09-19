@@ -32,7 +32,7 @@ sealed class Program
         app.UseStaticFiles(); // will serve wwwroot/index.html
 
         using var connectionManager = new ConnectionManager();
-        var worldManager = new Aurora.World.WorldManager();
+        using var worldManager = new Aurora.World.WorldManager();
         var endpoint = new IPEndPoint(IPAddress.Any, 25565);
         using var tcpServer = new TcpServer(endpoint, connectionManager, worldManager);
 

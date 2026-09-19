@@ -18,7 +18,12 @@ public enum BiomeType : int
     Ocean = 9,
     DeepOcean = 10,
     River = 11,
-    Mountains = 12
+    Mountains = 12,
+    Swamp = 13,
+    Savanna = 14,
+    Jungle = 15,
+    DarkForest = 16,
+    Badlands = 17
 }
 
 /// <summary>

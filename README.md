@@ -12,6 +12,17 @@ The goal of this project is simple: create a fast, clean, and reliable Minecraft
 
 ### What works right now
 - **Connecting & Playing**: You can join with an unmodified Minecraft 1.21.4 client. Handshake, configuration sync, and login are all fully working.
+- **Fast Join & Instant Respawn**: Sub-50ms loading screen dismissal using Minecraft 1.20.2+ Chunk Batching (`ChunkBatchStart 0x0D`, `ChunkBatchFinished 0x0C`, `ChunkBatchReceived 0x08`). Immediate 3x3 spawn chunks are sent before teleport, with outer chunks streamed in the background. Fixes the infinite loading screen hang on respawn.
+- **Chat & Brigadier Commands**: Full chat system with Brigadier command graph declaration (`0x11`) and real-time tab auto-completion (`0x0D`/`0x10`). Built-in commands include `/gamemode` (`/gm`), `/heal`, `/kill`, `/ping`, `/pos`, `/time set`, `/clear`, and `/help`.
+- **Player Persistence & Anvil Storage**: Automatic saving and loading of player coordinates, rotation, health, hunger, game mode, hotbar, and inventory using binary NBT. Region `.mca` loading and saving.
+- **Survival Mechanics (WIP)**:
+  - Visual mining crack overlays (`BlockDestroyStagePacket 0x06`).
+  - Realistic block drops (`BlockDropRegistry`) mapping broken blocks to items (stone -> cobblestone, ores -> raw minerals/gems).
+  - Floating 3D item entities (`ItemEntity` EntityType 72) with gravity, air drag, and ground friction.
+  - Dropping items via `Q` (single) and `Ctrl+Q` (entire stack) with view-angle throw trajectory.
+  - Automatic item collection (`TakeItemEntityPacket 0x76`) and inventory merging up to 64 items per stack.
+  - Survival block placement with held stack decrement.
+- **Item Registry**: High-speed $O(1)$ lookups for all 1,385 official 1.21.4 Minecraft items from embedded datasets.
 - **World Generation**: Multi-noise terrain generation inspired by vanilla and ported in part from [Pumpkin-MC](https://github.com/Pumpkin-MC/Pumpkin):
   - 10+ biomes (Plains, Forests, Birch Forests, Taiga, Deserts, Beaches, Snowy Mountains, and Oceans).
   - Proper height variation: ocean trenches, flat beaches, rolling hills, and mountain peaks.
@@ -68,6 +79,17 @@ Mục tiêu của dự án là xây dựng một server gọn gàng, mượt mà
 
 ### Những tính năng đã hoạt động
 - **Vào game & kết nối**: Đăng nhập mượt mà bằng client 1.21.4 gốc. Hỗ trợ đầy đủ các bước handshake, configuration sync và play packet.
+- **Vào game tức thì & Hồi sinh siêu nhanh (Fast Join & Instant Respawn)**: Áp dụng cơ chế Chunk Batching chuẩn 1.21.4 (`0x0D`, `0x0C`, `0x08`), gửi ngay 9 chunk tức thời bao quanh spawn giúp đóng màn hình chờ trong < 50ms; sửa triệt để lỗi kẹt vĩnh viễn ở màn hình "Loading terrain..." khi hồi sinh (Respawn).
+- **Hệ thống Chat & Cây Lệnh Brigadier**: Hỗ trợ đầy đủ chat màu và cây lệnh chuẩn Brigadier (`0x11`) kèm gợi ý Tab-completion thời gian thực (`0x0D`/`0x10`). Tích hợp sẵn các lệnh `/gamemode` (`/gm`), `/heal`, `/kill`, `/ping`, `/pos`, `/time set`, `/clear`, `/help`.
+- **Lưu trữ Người Chơi & Thế Giới (Persistence & Storage)**: Tự động lưu và tải lại vị trí, góc nhìn, máu, thanh đói, chế độ chơi, túi đồ và hotbar của người chơi bằng chuẩn Binary NBT. Đọc và ghi dữ liệu chunk định dạng Anvil Region `.mca`.
+- **Cơ chế Sinh tồn (Survival Loop - Đang hoàn thiện)**:
+  - Hoạt ảnh nứt khối khi đào (`BlockDestroyStagePacket 0x06`).
+  - Hệ thống rơi vật phẩm theo chuẩn Minecraft (`BlockDropRegistry`).
+  - Thực thể vật phẩm rơi 3D (`ItemEntity` EntityType 72) với trọng lực, ma sát mặt đất và tự biến mất sau 5 phút.
+  - Ném đồ bằng phím `Q` (ném 1 item) và `Ctrl+Q` (ném cả stack) theo góc nhìn.
+  - Tự động nhặt đồ và dồn ngăn túi đồ đến tối đa 64 (`TakeItemEntityPacket 0x76`).
+  - Đặt khối trong Survival tự động tiêu hao item trên tay.
+- **Tra cứu 1.385 Vật phẩm (Item Registry)**: Tra cứu siêu tốc $O(1)$ toàn bộ 1.385 vật phẩm chính thức của Minecraft 1.21.4 từ bộ dữ liệu nhị phân nhúng.
 - **Tạo thế giới tự nhiên (World Gen)**: Sinh địa hình theo cơ chế Multi-Noise tương tự bản gốc và được port một phần từ dự án [Pumpkin-MC](https://github.com/Pumpkin-MC/Pumpkin):
   - Đầy đủ hơn 10 quần xã sinh vật (Đồng bằng, Rừng sồi, Rừng bạch dương, Rừng thông Taiga, Sa mạc, Bãi biển, Núi tuyết và Đại dương).
   - Độ cao địa hình rõ rệt: rãnh biển sâu, bãi biển bằng phẳng, đồi thoai thoải và núi cao chọc trời.

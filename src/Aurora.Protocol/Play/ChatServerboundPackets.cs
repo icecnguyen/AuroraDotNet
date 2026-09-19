@@ -38,3 +38,18 @@ public class ChatCommandServerboundPacket : IPacket
 
     public void Write(ref PacketWriter writer) { }
 }
+
+public class ChatCommandSignedServerboundPacket : IPacket
+{
+    public int PacketId => 0x06; // Serverbound 1.21.4
+
+    public string Command { get; set; } = string.Empty;
+
+    public void Read(ref PacketReader reader)
+    {
+        Command = reader.ReadString();
+        // Ignoring cryptographic signatures, timestamp, salt, argument signatures, and checksum
+    }
+
+    public void Write(ref PacketWriter writer) { }
+}

@@ -39,6 +39,13 @@ public ref struct PacketWriter
         System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(span, value);
         Writer.Advance(2);
     }
+
+    public void WriteShort(short value)
+    {
+        var span = Writer.GetSpan(2);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16BigEndian(span, value);
+        Writer.Advance(2);
+    }
     public void WriteBool(bool value)
     {
         var span = Writer.GetSpan(1);

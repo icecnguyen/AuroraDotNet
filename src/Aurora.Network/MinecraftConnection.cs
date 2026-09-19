@@ -9,6 +9,9 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Aurora.Core.Math;
+using Aurora.World;
+using Aurora.World.Entities;
+using Aurora.World.Storage;
 
 namespace Aurora.Network;
 
@@ -30,7 +33,8 @@ public sealed class MinecraftConnection : IDisposable
     private readonly Pipe _receivePipe;
     private readonly Channel<byte[]> _sendChannel = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
 
-    public Guid Id { get; } = Guid.NewGuid();
+    public Guid Id { get; private set; } = Guid.NewGuid();
+    public Player? Player { get; private set; }
     public EndPoint? RemoteEndPoint { get; }
     
     public PipeReader Reader => _receivePipe.Reader;
@@ -57,6 +61,8 @@ public sealed class MinecraftConnection : IDisposable
 
     public int ViewDistance { get; set; } = 8;
     private readonly HashSet<ChunkPosition> _loadedChunks = new();
+    private short _selectedSlot;
+    private readonly int[] _hotbarItemIds = new int[9];
 
     private readonly ConnectionManager _connectionManager;
     private readonly Aurora.World.WorldManager _worldManager;
@@ -102,6 +108,26 @@ public sealed class MinecraftConnection : IDisposable
         SendPacket(chunkPacket);
     }
 
+    private void SendImmediateSpawnChunks(int centerX, int centerZ)
+    {
+        SendPacket(new Aurora.Protocol.Play.ChunkBatchStartPacket());
+
+        int count = 0;
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            for (int dz = -1; dz <= 1; dz++)
+            {
+                int cx = centerX + dx;
+                int cz = centerZ + dz;
+                _loadedChunks.Add(new ChunkPosition(cx, cz));
+                SendChunk(cx, cz);
+                count++;
+            }
+        }
+
+        SendPacket(new Aurora.Protocol.Play.ChunkBatchFinishedPacket { BatchSize = count });
+    }
+
     private void UpdatePlayerChunks(int centerChunkX, int centerChunkZ)
     {
         SendCenterViewPosition(centerChunkX, centerChunkZ);
@@ -121,6 +147,8 @@ public sealed class MinecraftConnection : IDisposable
             }
         }
 
+        if (neededChunks.Count == 0) return;
+
         neededChunks.Sort((a, b) => a.DistSq.CompareTo(b.DistSq));
 
         // High-speed parallel pre-generation across CPU cores
@@ -132,11 +160,114 @@ public sealed class MinecraftConnection : IDisposable
             }
         });
 
-        foreach (var item in neededChunks)
+        const int batchCapacity = 16;
+        for (int i = 0; i < neededChunks.Count; i += batchCapacity)
         {
             if (_cts.IsCancellationRequested || CurrentState != 4) break;
-            _loadedChunks.Add(new ChunkPosition(item.X, item.Z));
-            SendChunk(item.X, item.Z);
+
+            int batchCount = Math.Min(batchCapacity, neededChunks.Count - i);
+            SendPacket(new Aurora.Protocol.Play.ChunkBatchStartPacket());
+            for (int j = 0; j < batchCount; j++)
+            {
+                var item = neededChunks[i + j];
+                _loadedChunks.Add(new ChunkPosition(item.X, item.Z));
+                SendChunk(item.X, item.Z);
+            }
+            SendPacket(new Aurora.Protocol.Play.ChunkBatchFinishedPacket { BatchSize = batchCount });
+        }
+    }
+
+    private void SpawnItemInWorld(System.Numerics.Vector3 position, ItemStack stack, System.Numerics.Vector3 velocity, int pickupDelay = 10)
+    {
+        var itemEntity = new Aurora.World.Entities.ItemEntity(position, stack, velocity, pickupDelay);
+        _worldManager.AddItemEntity(itemEntity);
+
+        var spawn = new Aurora.Protocol.Play.SpawnEntityPacket
+        {
+            EntityId = itemEntity.EntityId,
+            EntityUUID = itemEntity.Uuid,
+            Type = 72, // minecraft:item in 1.21.4
+            X = itemEntity.Position.X,
+            Y = itemEntity.Position.Y,
+            Z = itemEntity.Position.Z,
+            Pitch = 0,
+            Yaw = 0,
+            HeadYaw = 0,
+            Data = 1,
+            VelocityX = (short)(velocity.X * 8000),
+            VelocityY = (short)(velocity.Y * 8000),
+            VelocityZ = (short)(velocity.Z * 8000)
+        };
+        var meta = new Aurora.Protocol.Play.SetItemEntityDataPacket
+        {
+            EntityId = itemEntity.EntityId,
+            ItemId = stack.ItemId,
+            ItemCount = stack.Count
+        };
+
+        _connectionManager.BroadcastPacket(spawn);
+        _connectionManager.BroadcastPacket(meta);
+    }
+
+    private void CheckItemPickups()
+    {
+        if (Player == null || Player.GameMode == GameMode.Spectator) return;
+
+        var playerPos = new System.Numerics.Vector3((float)X, (float)Y, (float)Z);
+        foreach (var item in _worldManager.ItemEntities)
+        {
+            if (item.IsDead || item.PickupDelay > 0) continue;
+
+            float distSq = System.Numerics.Vector3.DistanceSquared(playerPos, item.Position);
+            if (distSq <= 2.25f) // 1.5 blocks pickup radius
+            {
+                var stack = item.Item;
+                int beforeCount = stack.Count;
+                if (Player.TryPickupItem(ref stack))
+                {
+                    int pickedUpCount = beforeCount - stack.Count;
+                    item.Item = stack;
+
+                    // 1. Play pickup animation to all players
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.TakeItemEntityPacket
+                    {
+                        CollectedEntityId = item.EntityId,
+                        CollectorEntityId = this.EntityId,
+                        PickupCount = pickedUpCount
+                    });
+
+                    // 2. If entity is completely picked up, destroy entity
+                    if (stack.IsEmpty)
+                    {
+                        item.IsDead = true;
+                        _worldManager.RemoveItemEntity(item.EntityId);
+                        _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.RemoveEntitiesPacket(item.EntityId));
+                    }
+                    else
+                    {
+                        _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetItemEntityDataPacket
+                        {
+                            EntityId = item.EntityId,
+                            ItemId = stack.ItemId,
+                            ItemCount = stack.Count
+                        });
+                    }
+
+                    // 3. Update hotbar cache and sync equipment
+                    for (int i = 0; i < 9; i++)
+                    {
+                        _hotbarItemIds[i] = Player.GetHotbarItem(i).ItemId;
+                    }
+                    var currentHeld = Player.GetHeldItem();
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEquipmentPacket
+                    {
+                        EntityId = this.EntityId,
+                        Slot = 0,
+                        ItemId = currentHeld.ItemId,
+                        ItemCount = currentHeld.Count
+                    });
+                }
+            }
         }
     }
 
@@ -335,13 +466,14 @@ public sealed class MinecraftConnection : IDisposable
                 var ls = new Aurora.Protocol.Login.LoginStartPacket();
                 ls.Read(ref reader);
                 Username = string.IsNullOrEmpty(ls.Name) ? "Unknown" : ls.Name;
+                Id = ls.Uuid != Guid.Empty ? ls.Uuid : CreateOfflineUuid(Username);
 #pragma warning disable CA1303
-                Console.WriteLine($"[Network] Player '{Username}' logging in...");
+                Console.WriteLine($"[Network] Player '{Username}' ({Id}) logging in...");
 #pragma warning restore CA1303
                 
                 var success = new Aurora.Protocol.Login.LoginSuccessPacket
                 {
-                    Uuid = ls.Uuid == Guid.Empty ? Guid.NewGuid() : ls.Uuid,
+                    Uuid = this.Id,
                     Username = Username
                 };
                 SendPacket(success);
@@ -455,16 +587,43 @@ public sealed class MinecraftConnection : IDisposable
 #pragma warning restore CA1303
                 CurrentState = 4; // Play
                 
-                // 1. Send Join Game with configured View Distance
+                // 1. Load player persistence or create fresh player data
+                Player = PlayerDataStorage.Load(this.Id, "world", new Aurora.Core.Ids.EntityId(this.EntityId), this.Username);
+                if (Player != null)
+                {
+                    this.X = Player.Position.X;
+                    this.Y = Player.Position.Y;
+                    this.Z = Player.Position.Z;
+                    this.Yaw = Player.Yaw;
+                    this.Pitch = Player.Pitch;
+                    this._selectedSlot = (short)Player.SelectedSlot;
+                    for (int i = 0; i < 9; i++)
+                    {
+                        _hotbarItemIds[i] = Player.GetHotbarItem(i).ItemId;
+                    }
+                }
+                else
+                {
+                    var spawn = _worldManager.FindSpawnPosition();
+                    this.X = spawn.X;
+                    this.Y = spawn.Y;
+                    this.Z = spawn.Z;
+                    Player = new Player(new Aurora.Core.Ids.EntityId(this.EntityId), this.Id, this.Username, GameMode.Creative);
+                    Player.Position = new System.Numerics.Vector3((float)this.X, (float)this.Y, (float)this.Z);
+                    PlayerDataStorage.Save(Player, "world");
+                }
+
+                // 2. Send Join Game with configured View Distance & Player GameMode
                 var joinGame = new Aurora.Protocol.Play.JoinGamePacket 
                 { 
                     EntityId = this.EntityId,
                     ViewDistance = this.ViewDistance,
-                    SimulationDistance = this.ViewDistance
+                    SimulationDistance = this.ViewDistance,
+                    GameMode = (byte)Player.GameMode
                 };
                 SendPacket(joinGame);
                 
-                // 2. Send Player Info Update (0x40) for local player so client initializes game mode & profile
+                // 3. Send Player Info Update (0x40) for local player
                 var myInfo = new Aurora.Protocol.Play.PlayerInfoUpdatePacket
                 {
                     Actions = 0x1D, // add_player(1) | gamemode(4) | listed(8) | latency(16)
@@ -474,7 +633,7 @@ public sealed class MinecraftConnection : IDisposable
                         {
                             UUID = this.Id,
                             Name = this.Username,
-                            GameMode = 1,
+                            GameMode = (int)Player.GameMode,
                             Listed = true,
                             Ping = 0,
                             HasDisplayName = false
@@ -484,22 +643,32 @@ public sealed class MinecraftConnection : IDisposable
                 SendPacket(myInfo);
                 _connectionManager.BroadcastPacket(myInfo, except: this.Id);
 
-                // 3. Send View Distance (0x59)
+                // 4. Send Player Abilities (0x3A) matching GameMode
+                SendPlayerAbilities();
+
+                // 4b. Send Declare Commands (0x11) for Brigadier syntax & autocomplete
+                SendPacket(new Aurora.Protocol.Play.DeclareCommandsPacket());
+
+                // 5. Send Set Health (0x62)
+                SendPacket(new Aurora.Protocol.Play.SetHealthPacket
+                {
+                    Health = Player.Health,
+                    Food = Player.FoodLevel,
+                    FoodSaturation = Player.FoodSaturation
+                });
+
+                // 6. Send View Distance (0x59)
                 SendViewDistance(this.ViewDistance);
 
-                // 4. Find solid spawn on land
-                var spawn = _worldManager.FindSpawnPosition();
-                this.X = spawn.X;
-                this.Y = spawn.Y;
-                this.Z = spawn.Z;
-
+                // 7. Send Center View Position (0x58)
                 int spawnChunkX = (int)Math.Floor(this.X) >> 4;
                 int spawnChunkZ = (int)Math.Floor(this.Z) >> 4;
-
-                // 5. Send Center View Position (0x58)
                 SendCenterViewPosition(spawnChunkX, spawnChunkZ);
 
-                // 6. Send Player Position (0x42) IMMEDIATELY to dismiss "Joining world..." screen!
+                // Send immediate 3x3 spawn chunks with chunk batching to dismiss loading screen instantly!
+                SendImmediateSpawnChunks(spawnChunkX, spawnChunkZ);
+
+                // 8. Send Player Position (0x42) IMMEDIATELY to dismiss "Joining world..." screen!
                 var playerPos = new Aurora.Protocol.Play.PlayerPositionPacket
                 {
                     TeleportId = 1,
@@ -508,8 +677,30 @@ public sealed class MinecraftConnection : IDisposable
                     Z = this.Z
                 };
                 SendPacket(playerPos);
+
+                // Sync existing item entities to this player
+                foreach (var item in _worldManager.ItemEntities)
+                {
+                    if (item.IsDead) continue;
+                    SendPacket(new Aurora.Protocol.Play.SpawnEntityPacket
+                    {
+                        EntityId = item.EntityId,
+                        EntityUUID = item.Uuid,
+                        Type = 72,
+                        X = item.Position.X,
+                        Y = item.Position.Y,
+                        Z = item.Position.Z,
+                        Data = 1
+                    });
+                    SendPacket(new Aurora.Protocol.Play.SetItemEntityDataPacket
+                    {
+                        EntityId = item.EntityId,
+                        ItemId = item.Item.ItemId,
+                        ItemCount = item.Item.Count
+                    });
+                }
                 
-                // 7. Tell this player about other online players
+                // 9. Tell this player about other online players
                 foreach (var other in _connectionManager.Players)
                 {
                     if (other.Id == this.Id || other.CurrentState != 4) continue;
@@ -523,7 +714,7 @@ public sealed class MinecraftConnection : IDisposable
                             {
                                 UUID = other.Id,
                                 Name = other.Username,
-                                GameMode = 1,
+                                GameMode = other.Player != null ? (int)other.Player.GameMode : 1,
                                 Listed = true,
                                 Ping = (int)other.Ping,
                                 HasDisplayName = false
@@ -541,6 +732,22 @@ public sealed class MinecraftConnection : IDisposable
                         Pitch = other.Pitch, Yaw = other.Yaw, HeadYaw = other.Yaw
                     };
                     SendPacket(otherSpawn);
+
+                    // Send other player's held equipment to this player
+                    if (other.Player != null)
+                    {
+                        var otherHeld = other.Player.GetHeldItem();
+                        if (!otherHeld.IsEmpty)
+                        {
+                            SendPacket(new Aurora.Protocol.Play.SetEquipmentPacket
+                            {
+                                EntityId = other.EntityId,
+                                Slot = 0,
+                                ItemId = otherHeld.ItemId,
+                                ItemCount = otherHeld.Count
+                            });
+                        }
+                    }
                 }
 
                 // Announce this player entity to others
@@ -554,10 +761,23 @@ public sealed class MinecraftConnection : IDisposable
                 };
                 _connectionManager.BroadcastPacket(mySpawn, except: this.Id);
 
-                // 8. Stream chunks around spawn asynchronously in background so client receives them smoothly
+                // Broadcast this player's held item to other players
+                var myHeld = Player.GetHeldItem();
+                if (!myHeld.IsEmpty)
+                {
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEquipmentPacket
+                    {
+                        EntityId = this.EntityId,
+                        Slot = 0,
+                        ItemId = myHeld.ItemId,
+                        ItemCount = myHeld.Count
+                    }, except: this.Id);
+                }
+
+                // 10. Stream chunks around spawn asynchronously in background
                 _ = System.Threading.Tasks.Task.Run(() => UpdatePlayerChunks(spawnChunkX, spawnChunkZ));
 
-                // 9. Start Keep Alive Task
+                // 11. Start Keep Alive Task
                 _keepAliveTask = System.Threading.Tasks.Task.Run(KeepAliveLoop);
             }
             else
@@ -585,6 +805,11 @@ public sealed class MinecraftConnection : IDisposable
                 int oldChunkZ = (int)Math.Floor(Z) >> 4;
 
                 X = pos.X; Y = pos.Y; Z = pos.Z;
+                if (Player != null)
+                {
+                    Player.Position = new System.Numerics.Vector3((float)X, (float)Y, (float)Z);
+                    Player.OnGround = pos.OnGround;
+                }
 
                 int newChunkX = (int)Math.Floor(X) >> 4;
                 int newChunkZ = (int)Math.Floor(Z) >> 4;
@@ -593,6 +818,8 @@ public sealed class MinecraftConnection : IDisposable
                 {
                     UpdatePlayerChunks(newChunkX, newChunkZ);
                 }
+
+                CheckItemPickups();
                 
                 _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityTeleportPacket
                 {
@@ -611,6 +838,13 @@ public sealed class MinecraftConnection : IDisposable
 
                 X = posRot.X; Y = posRot.Y; Z = posRot.Z;
                 Yaw = posRot.Yaw; Pitch = posRot.Pitch;
+                if (Player != null)
+                {
+                    Player.Position = new System.Numerics.Vector3((float)X, (float)Y, (float)Z);
+                    Player.Yaw = Yaw;
+                    Player.Pitch = Pitch;
+                    Player.OnGround = posRot.OnGround;
+                }
 
                 int newChunkX = (int)Math.Floor(X) >> 4;
                 int newChunkZ = (int)Math.Floor(Z) >> 4;
@@ -619,6 +853,8 @@ public sealed class MinecraftConnection : IDisposable
                 {
                     UpdatePlayerChunks(newChunkX, newChunkZ);
                 }
+
+                CheckItemPickups();
                 
                 _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityTeleportPacket
                 {
@@ -638,6 +874,12 @@ public sealed class MinecraftConnection : IDisposable
                 var rot = new Aurora.Protocol.Play.SetPlayerRotationPacket();
                 rot.Read(ref reader);
                 Yaw = rot.Yaw; Pitch = rot.Pitch;
+                if (Player != null)
+                {
+                    Player.Yaw = Yaw;
+                    Player.Pitch = Pitch;
+                    Player.OnGround = rot.OnGround;
+                }
                 
                 _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityTeleportPacket
                 {
@@ -652,24 +894,265 @@ public sealed class MinecraftConnection : IDisposable
                     HeadYaw = this.Yaw
                 }, except: this.Id);
             }
-            else if (packetId == 0x24) // Serverbound Player Action (Block Dig)
+            else if (packetId == 0x27 || packetId == 0x24) // Serverbound Player Action (Block Dig)
             {
                 int status = reader.ReadVarInt();
                 var position = reader.ReadPosition();
                 byte face = reader.ReadByte();
                 int sequence = reader.ReadVarInt();
 
-                if (status == 2) // Block broken (simplified)
-                {
-                    // Update RAM
-                    _worldManager.SetBlock(position.X, position.Y, position.Z, Aurora.World.Generation.SurfaceBuilder.Air);
+                long encodedPos = Aurora.Protocol.Play.BlockUpdatePacket.EncodePosition(position.X, position.Y, position.Z);
 
-                    var blockUpdate = new Aurora.Protocol.Play.BlockUpdatePacket
+                if (status == 0) // Started digging
+                {
+                    if (Player?.GameMode == GameMode.Creative)
                     {
-                        Location = Aurora.Protocol.Play.BlockUpdatePacket.EncodePosition(position.X, position.Y, position.Z),
-                        BlockStateId = Aurora.World.Generation.SurfaceBuilder.Air // Air
-                    };
-                    _connectionManager.BroadcastPacket(blockUpdate);
+                        // Instant break in Creative
+                        _worldManager.SetBlock(position.X, position.Y, position.Z, Block.Air);
+                        _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.BlockUpdatePacket
+                        {
+                            Location = encodedPos,
+                            BlockStateId = Block.Air
+                        });
+                        _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.BlockDestroyStagePacket
+                        {
+                            EntityId = this.EntityId,
+                            Location = encodedPos,
+                            DestroyStage = -1
+                        });
+                    }
+                    else
+                    {
+                        // Show stage 0 crack in Survival
+                        _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.BlockDestroyStagePacket
+                        {
+                            EntityId = this.EntityId,
+                            Location = encodedPos,
+                            DestroyStage = 0
+                        });
+                    }
+                }
+                else if (status == 1) // Cancelled digging
+                {
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.BlockDestroyStagePacket
+                    {
+                        EntityId = this.EntityId,
+                        Location = encodedPos,
+                        DestroyStage = -1
+                    });
+                }
+                else if (status == 2) // Finished digging
+                {
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.BlockDestroyStagePacket
+                    {
+                        EntityId = this.EntityId,
+                        Location = encodedPos,
+                        DestroyStage = -1
+                    });
+
+                    ushort oldBlock = _worldManager.GetBlock(position.X, position.Y, position.Z);
+                    _worldManager.SetBlock(position.X, position.Y, position.Z, Block.Air);
+
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.BlockUpdatePacket
+                    {
+                        Location = encodedPos,
+                        BlockStateId = Block.Air
+                    });
+
+                    if (Player?.GameMode == GameMode.Survival)
+                    {
+                        var drop = Aurora.World.BlockDropRegistry.GetDrop(oldBlock);
+                        if (!drop.IsEmpty)
+                        {
+                            var dropPos = new System.Numerics.Vector3(position.X + 0.5f, position.Y + 0.25f, position.Z + 0.5f);
+#pragma warning disable CA5394 // Random is used for game physics jitter
+                            var dropVel = new System.Numerics.Vector3((float)(Random.Shared.NextDouble() * 0.2 - 0.1), 0.2f, (float)(Random.Shared.NextDouble() * 0.2 - 0.1));
+#pragma warning restore CA5394
+                            SpawnItemInWorld(dropPos, drop, dropVel, pickupDelay: 10);
+                        }
+                    }
+                }
+                else if (status == 3 || status == 4) // 3 = Drop entire stack (Ctrl+Q), 4 = Drop 1 item (Q)
+                {
+                    if (Player != null)
+                    {
+                        var dropped = Player.DropHeldItem(dropEntireStack: status == 3);
+                        if (!dropped.IsEmpty)
+                        {
+                            float pitchRad = Pitch * (MathF.PI / 180f);
+                            float yawRad = -Yaw * (MathF.PI / 180f);
+                            float vx = -MathF.Sin(yawRad) * MathF.Cos(pitchRad) * 0.35f;
+                            float vy = -MathF.Sin(pitchRad) * 0.35f + 0.1f;
+                            float vz = MathF.Cos(yawRad) * MathF.Cos(pitchRad) * 0.35f;
+                            var dropPos = new System.Numerics.Vector3((float)X, (float)Y + 1.32f, (float)Z);
+                            var dropVel = new System.Numerics.Vector3(vx, vy, vz);
+                            SpawnItemInWorld(dropPos, dropped, dropVel, pickupDelay: 40);
+
+                            _hotbarItemIds[_selectedSlot] = Player.GetHotbarItem(_selectedSlot).ItemId;
+                            var currentHeld = Player.GetHeldItem();
+                            _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEquipmentPacket
+                            {
+                                EntityId = this.EntityId,
+                                Slot = 0,
+                                ItemId = currentHeld.ItemId,
+                                ItemCount = currentHeld.Count
+                            });
+                        }
+                    }
+                }
+
+                if (sequence > 0)
+                {
+                    SendPacket(new Aurora.Protocol.Play.AcknowledgeBlockChangePacket { SequenceId = sequence });
+                }
+            }
+            else if (packetId == 0x33) // Held Item Slot (0-8)
+            {
+                var held = new Aurora.Protocol.Play.HeldItemSlotPacket();
+                held.Read(ref reader);
+                if (held.SlotId >= 0 && held.SlotId < 9)
+                {
+                    _selectedSlot = held.SlotId;
+                    if (Player != null)
+                    {
+                        Player.SelectedSlot = held.SlotId;
+                        var currentHeld = Player.GetHeldItem();
+                        _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEquipmentPacket
+                        {
+                            EntityId = this.EntityId,
+                            Slot = 0,
+                            ItemId = currentHeld.ItemId,
+                            ItemCount = currentHeld.Count
+                        }, except: this.Id);
+                    }
+                }
+            }
+            else if (packetId == 0x36) // Set Creative Mode Slot
+            {
+                var creative = new Aurora.Protocol.Play.SetCreativeModeSlotPacket();
+                creative.Read(ref reader);
+                if (creative.Slot >= 36 && creative.Slot <= 44)
+                {
+                    int hotbarSlot = creative.Slot - 36;
+                    _hotbarItemIds[hotbarSlot] = creative.ItemId;
+                    if (Player != null)
+                    {
+                        Player.SetHotbarItem(hotbarSlot, new ItemStack(creative.ItemId, (byte)Math.Clamp(creative.ItemCount, 1, 64)));
+                        if (hotbarSlot == _selectedSlot)
+                        {
+                            var currentHeld = Player.GetHeldItem();
+                            _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEquipmentPacket
+                            {
+                                EntityId = this.EntityId,
+                                Slot = 0,
+                                ItemId = currentHeld.ItemId,
+                                ItemCount = currentHeld.Count
+                            }, except: this.Id);
+                        }
+                    }
+                }
+                else if (creative.Slot >= 0 && creative.Slot < 9)
+                {
+                    int hotbarSlot = creative.Slot;
+                    _hotbarItemIds[hotbarSlot] = creative.ItemId;
+                    if (Player != null)
+                    {
+                        Player.SetHotbarItem(hotbarSlot, new ItemStack(creative.ItemId, (byte)Math.Clamp(creative.ItemCount, 1, 64)));
+                        if (hotbarSlot == _selectedSlot)
+                        {
+                            var currentHeld = Player.GetHeldItem();
+                            _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEquipmentPacket
+                            {
+                                EntityId = this.EntityId,
+                                Slot = 0,
+                                ItemId = currentHeld.ItemId,
+                                ItemCount = currentHeld.Count
+                            }, except: this.Id);
+                        }
+                    }
+                }
+                else if (Player != null && creative.Slot >= 0 && creative.Slot < Player.Inventory.Capacity)
+                {
+                    Player.Inventory.SetItem(creative.Slot, new ItemStack(creative.ItemId, (byte)Math.Clamp(creative.ItemCount, 1, 64)));
+                }
+            }
+            else if (packetId == 0x3A) // Swing Arm
+            {
+                var swing = new Aurora.Protocol.Play.SwingArmServerboundPacket();
+                swing.Read(ref reader);
+                byte anim = (byte)(swing.Hand == 1 ? 3 : 0); // 0 = main hand, 3 = offhand
+                _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.AnimatePacket
+                {
+                    EntityId = this.EntityId,
+                    Animation = anim
+                }, except: this.Id);
+            }
+            else if (packetId == 0x28) // Player Command (Sneak / Sprint)
+            {
+                var pCmd = new Aurora.Protocol.Play.PlayerCommandServerboundPacket();
+                pCmd.Read(ref reader);
+                if (pCmd.ActionId == 0) // Start sneaking
+                {
+                    if (Player != null) Player.IsSneaking = true;
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEntityDataPacket
+                    {
+                        EntityId = this.EntityId,
+                        IsSneaking = true,
+                        IsSprinting = Player?.IsSprinting ?? false
+                    }, except: this.Id);
+                }
+                else if (pCmd.ActionId == 1) // Stop sneaking
+                {
+                    if (Player != null) Player.IsSneaking = false;
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEntityDataPacket
+                    {
+                        EntityId = this.EntityId,
+                        IsSneaking = false,
+                        IsSprinting = Player?.IsSprinting ?? false
+                    }, except: this.Id);
+                }
+                else if (pCmd.ActionId == 3) // Start sprinting
+                {
+                    if (Player != null) Player.IsSprinting = true;
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEntityDataPacket
+                    {
+                        EntityId = this.EntityId,
+                        IsSneaking = Player?.IsSneaking ?? false,
+                        IsSprinting = true
+                    }, except: this.Id);
+                }
+                else if (pCmd.ActionId == 4) // Stop sprinting
+                {
+                    if (Player != null) Player.IsSprinting = false;
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEntityDataPacket
+                    {
+                        EntityId = this.EntityId,
+                        IsSneaking = Player?.IsSneaking ?? false,
+                        IsSprinting = false
+                    }, except: this.Id);
+                }
+            }
+            else if (packetId == 0x26) // Player Abilities
+            {
+                var abilities = new Aurora.Protocol.Play.PlayerAbilitiesServerboundPacket();
+                abilities.Read(ref reader);
+                if (Player != null)
+                {
+                    Player.Abilities.Flying = (abilities.Flags & 0x02) != 0;
+                }
+            }
+            else if (packetId == 0x08) // Chunk Batch Received (0x08 in 1.21.4)
+            {
+                var batch = new Aurora.Protocol.Play.ChunkBatchReceivedPacket();
+                batch.Read(ref reader);
+            }
+            else if (packetId == 0x0A) // Client Command (Respawn)
+            {
+                var cCmd = new Aurora.Protocol.Play.ClientCommandServerboundPacket();
+                cCmd.Read(ref reader);
+                if (cCmd.ActionId == 0) // Respawn
+                {
+                    RespawnPlayer();
                 }
             }
             else if (packetId == 0x3C) // Use Item On Block (Place)
@@ -687,30 +1170,79 @@ public sealed class MinecraftConnection : IDisposable
                 else if (place.Face == 3) z++;
                 else if (place.Face == 4) x--;
                 else if (place.Face == 5) x++;
-                
-                // Update RAM
-                _worldManager.SetBlock(x, y, z, Aurora.World.Generation.SurfaceBuilder.Stone);
 
-                long newLocation = Aurora.Protocol.Play.BlockUpdatePacket.EncodePosition(x, y, z);
-                
-                var update = new Aurora.Protocol.Play.BlockUpdatePacket
+                // Resolve held block from active hotbar slot
+                int heldItemId = (_selectedSlot >= 0 && _selectedSlot < 9) ? _hotbarItemIds[_selectedSlot] : 0;
+                ushort blockToPlace = BlockRegistry.GetBlockStateFromItem(heldItemId);
+                if (blockToPlace == Block.Air && Player?.GameMode == GameMode.Creative)
                 {
-                    Location = newLocation,
-                    BlockStateId = Aurora.World.Generation.SurfaceBuilder.Stone // Stone
-                };
-                
-                _connectionManager.BroadcastPacket(update);
+                    blockToPlace = Block.Cobblestone;
+                }
+
+                if (blockToPlace != Block.Air)
+                {
+                    // Update RAM
+                    _worldManager.SetBlock(x, y, z, blockToPlace);
+
+                    long newLocation = Aurora.Protocol.Play.BlockUpdatePacket.EncodePosition(x, y, z);
+                    
+                    var update = new Aurora.Protocol.Play.BlockUpdatePacket
+                    {
+                        Location = newLocation,
+                        BlockStateId = blockToPlace
+                    };
+                    
+                    _connectionManager.BroadcastPacket(update);
+
+                    if (Player != null && Player.GameMode == GameMode.Survival)
+                    {
+                        var heldStack = Player.GetHeldItem();
+                        if (!heldStack.IsEmpty && heldStack.Count > 0)
+                        {
+                            var newStack = heldStack.Count > 1 
+                                ? new ItemStack(heldStack.ItemId, (byte)(heldStack.Count - 1)) 
+                                : ItemStack.Empty;
+                            Player.Inventory.SetItem(36 + _selectedSlot, newStack);
+                            _hotbarItemIds[_selectedSlot] = newStack.ItemId;
+                            _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEquipmentPacket
+                            {
+                                EntityId = this.EntityId,
+                                Slot = 0,
+                                ItemId = newStack.ItemId,
+                                ItemCount = newStack.Count
+                            });
+                        }
+                    }
+                }
+
+                if (place.Sequence > 0)
+                {
+                    SendPacket(new Aurora.Protocol.Play.AcknowledgeBlockChangePacket { SequenceId = place.Sequence });
+                }
             }
-            else if (packetId == 0x05) // Chat Command
+            else if (packetId == 0x05 || packetId == 0x06) // Chat Command (0x05) or Chat Command Signed (0x06)
             {
-                var cmd = new Aurora.Protocol.Play.ChatCommandServerboundPacket();
-                cmd.Read(ref reader);
-                
-                string response = $"Unknown command: /{cmd.Command}";
-                if (cmd.Command.StartsWith("ping", System.StringComparison.OrdinalIgnoreCase)) response = $"Pong! Your ping is {Ping}ms.";
-                else if (cmd.Command.StartsWith("pos", System.StringComparison.OrdinalIgnoreCase)) response = $"You are at X={X:F1}, Y={Y:F1}, Z={Z:F1}";
-                
-                SendPacket(new Aurora.Protocol.Play.SystemChatMessagePacket { Content = response });
+                string rawCmd;
+                if (packetId == 0x05)
+                {
+                    var cmd = new Aurora.Protocol.Play.ChatCommandServerboundPacket();
+                    cmd.Read(ref reader);
+                    rawCmd = cmd.Command;
+                }
+                else
+                {
+                    var cmdSigned = new Aurora.Protocol.Play.ChatCommandSignedServerboundPacket();
+                    cmdSigned.Read(ref reader);
+                    rawCmd = cmdSigned.Command;
+                }
+
+                ExecuteCommand(rawCmd);
+            }
+            else if (packetId == 0x0D) // Command Suggestions Request (0x0D)
+            {
+                var req = new Aurora.Protocol.Play.CommandSuggestionRequestPacket();
+                req.Read(ref reader);
+                HandleCommandSuggestions(req.TransactionId, req.Text);
             }
             else if (packetId == 0x07) // Chat Message
             {
@@ -776,10 +1308,371 @@ public sealed class MinecraftConnection : IDisposable
         _sendChannel.Writer.TryWrite(fullBytes);
     }
 
+    public static Guid CreateOfflineUuid(string username)
+    {
+#pragma warning disable CA5351 // Minecraft protocol specifies MD5 for offline player UUIDs (RFC 4122 v3)
+        byte[] hash = System.Security.Cryptography.MD5.HashData(System.Text.Encoding.UTF8.GetBytes("OfflinePlayer:" + username));
+#pragma warning restore CA5351
+        hash[6] = (byte)((hash[6] & 0x0F) | 0x30); // UUID version 3
+        hash[8] = (byte)((hash[8] & 0x3F) | 0x80); // IETF variant
+        return new Guid(hash);
+    }
+
+    public void SendPlayerAbilities()
+    {
+        if (Player == null) return;
+        SendPacket(new Aurora.Protocol.Play.PlayerAbilitiesPacket
+        {
+            Flags = Player.Abilities.Flags,
+            FlyingSpeed = Player.Abilities.FlySpeed,
+            WalkingSpeed = Player.Abilities.WalkSpeed
+        });
+    }
+
+    private void ExecuteCommand(string rawCmd)
+    {
+        if (string.IsNullOrWhiteSpace(rawCmd)) return;
+
+        string cmd = rawCmd.TrimStart('/');
+        var parts = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return;
+
+        string commandName = parts[0];
+        string response;
+
+        if (commandName.Equals("ping", StringComparison.OrdinalIgnoreCase))
+        {
+            response = $"Pong! Your ping is {Ping}ms.";
+        }
+        else if (commandName.Equals("pos", StringComparison.OrdinalIgnoreCase))
+        {
+            response = $"You are at X={X:F1}, Y={Y:F1}, Z={Z:F1}";
+        }
+        else if (commandName.Equals("gamemode", StringComparison.OrdinalIgnoreCase) || commandName.Equals("gm", StringComparison.OrdinalIgnoreCase))
+        {
+            HandleGameModeCommand(cmd);
+            return;
+        }
+        else if (commandName.Equals("heal", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Player != null)
+            {
+                Player.Heal(20.0f);
+                Player.FoodLevel = 20;
+                Player.FoodSaturation = 5.0f;
+                SendPacket(new Aurora.Protocol.Play.SetHealthPacket
+                {
+                    Health = Player.Health,
+                    Food = Player.FoodLevel,
+                    FoodSaturation = Player.FoodSaturation
+                });
+                response = "§aYou have been fully healed!";
+            }
+            else
+            {
+                response = "§cPlayer not found.";
+            }
+        }
+        else if (commandName.Equals("kill", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Player != null)
+            {
+                Player.Damage(Player.Health);
+                SendPacket(new Aurora.Protocol.Play.SetHealthPacket
+                {
+                    Health = 0.0f,
+                    Food = Player.FoodLevel,
+                    FoodSaturation = Player.FoodSaturation
+                });
+                _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.AnimatePacket
+                {
+                    EntityId = this.EntityId,
+                    Animation = 1 // Hurt
+                });
+                response = "§cYou were killed.";
+            }
+            else
+            {
+                response = "§cPlayer not found.";
+            }
+        }
+        else if (commandName.Equals("time", StringComparison.OrdinalIgnoreCase))
+        {
+            if (parts.Length >= 3 && parts[1].Equals("set", StringComparison.OrdinalIgnoreCase))
+            {
+                string timeArg = parts[2].ToUpperInvariant();
+                long targetTime = timeArg switch
+                {
+                    "DAY" => 1000,
+                    "NOON" => 6000,
+                    "NIGHT" => 13000,
+                    "MIDNIGHT" => 18000,
+                    _ => long.TryParse(timeArg, System.Globalization.CultureInfo.InvariantCulture, out long parsed) ? parsed : -1
+                };
+
+                if (targetTime >= 0)
+                {
+                    var timePacket = new Aurora.Protocol.Play.UpdateTimePacket
+                    {
+                        WorldAge = 0,
+                        TimeOfDay = targetTime,
+                        IsIncreasing = true
+                    };
+                    _connectionManager.BroadcastPacket(timePacket);
+                    response = $"§aSet the time to {targetTime}";
+                }
+                else
+                {
+                    response = $"§cUnknown time '{parts[2]}'";
+                }
+            }
+            else
+            {
+                response = "§cUsage: /time set <day|night|noon|midnight|number>";
+            }
+        }
+        else if (commandName.Equals("clear", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Player != null)
+            {
+                Player.Inventory.Clear();
+                for (int i = 0; i < 9; i++)
+                {
+                    _hotbarItemIds[i] = 0;
+                }
+                _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEquipmentPacket
+                {
+                    EntityId = this.EntityId,
+                    Slot = 0,
+                    ItemId = 0,
+                    ItemCount = 0
+                }, except: this.Id);
+                response = $"§aCleared the inventory of {Username}";
+            }
+            else
+            {
+                response = "§cPlayer not found.";
+            }
+        }
+        else if (commandName.Equals("help", StringComparison.OrdinalIgnoreCase) || commandName.Equals("?", StringComparison.OrdinalIgnoreCase))
+        {
+            response = "§6Available commands: §f/gamemode, /gm, /heal, /kill, /ping, /pos, /time, /clear, /help";
+        }
+        else
+        {
+            response = $"§cUnknown command: /{cmd}";
+        }
+
+        SendPacket(new Aurora.Protocol.Play.SystemChatMessagePacket { Content = response });
+    }
+
+    private void HandleCommandSuggestions(int transactionId, string text)
+    {
+        var matches = new List<string>();
+        string normalized = text.TrimStart('/');
+
+        if (normalized.StartsWith("gamemode ", StringComparison.OrdinalIgnoreCase) || normalized.StartsWith("gm ", StringComparison.OrdinalIgnoreCase))
+        {
+            string[] modes = ["survival", "creative", "adventure", "spectator"];
+            string[] split = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            string prefix = split.Length > 1 ? split[1] : string.Empty;
+
+            foreach (var m in modes)
+            {
+                if (m.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    matches.Add(m);
+                }
+            }
+        }
+        else if (normalized.StartsWith("time set ", StringComparison.OrdinalIgnoreCase))
+        {
+            string[] times = ["day", "night", "noon", "midnight"];
+            string[] split = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            string prefix = split.Length > 2 ? split[2] : string.Empty;
+
+            foreach (var t in times)
+            {
+                if (t.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    matches.Add(t);
+                }
+            }
+        }
+        else if (normalized.StartsWith("time ", StringComparison.OrdinalIgnoreCase))
+        {
+            matches.Add("set");
+        }
+        else
+        {
+            string[] rootCommands = ["gamemode", "gm", "heal", "kill", "ping", "pos", "time", "clear", "help"];
+            string prefix = normalized.Trim();
+            foreach (var cmd in rootCommands)
+            {
+                if (cmd.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    matches.Add("/" + cmd);
+                }
+            }
+        }
+
+        int lastSpace = text.LastIndexOf(' ');
+        int start = lastSpace >= 0 ? lastSpace + 1 : 0;
+        int length = text.Length - start;
+
+        SendPacket(new Aurora.Protocol.Play.CommandSuggestionsResponsePacket
+        {
+            TransactionId = transactionId,
+            Start = start,
+            Length = length,
+            Matches = matches
+        });
+    }
+
+    private void HandleGameModeCommand(string command)
+    {
+        if (Player == null) return;
+
+        var parts = command.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+        {
+            SendPacket(new Aurora.Protocol.Play.SystemChatMessagePacket { Content = "§cUsage: /gamemode <survival|creative|adventure|spectator>" });
+            return;
+        }
+
+        string modeStr = parts[1].ToUpperInvariant();
+        GameMode newMode;
+        if (modeStr is "CREATIVE" or "C" or "1") newMode = GameMode.Creative;
+        else if (modeStr is "SURVIVAL" or "S" or "0") newMode = GameMode.Survival;
+        else if (modeStr is "ADVENTURE" or "A" or "2") newMode = GameMode.Adventure;
+        else if (modeStr is "SPECTATOR" or "SP" or "3") newMode = GameMode.Spectator;
+        else
+        {
+            SendPacket(new Aurora.Protocol.Play.SystemChatMessagePacket { Content = $"§cUnknown game mode '{parts[1]}'" });
+            return;
+        }
+
+        Player.SetGameMode(newMode);
+
+        // 1. Send Game State Change (0x23)
+        SendPacket(new Aurora.Protocol.Play.GameStateChangePacket
+        {
+            Reason = 3,
+            Value = (float)newMode
+        });
+
+        // 2. Send Player Abilities (0x3A)
+        SendPlayerAbilities();
+
+        // 3. Update Tab List GameMode (0x40 with action 4)
+        var updateGamemode = new Aurora.Protocol.Play.PlayerInfoUpdatePacket
+        {
+            Actions = 0x04, // update_game_mode
+            Entries = new[]
+            {
+                new Aurora.Protocol.Play.PlayerInfoEntry
+                {
+                    UUID = this.Id,
+                    Name = this.Username,
+                    GameMode = (int)newMode,
+                    Listed = true,
+                    Ping = (int)this.Ping,
+                    HasDisplayName = false
+                }
+            }
+        };
+        SendPacket(updateGamemode);
+        _connectionManager.BroadcastPacket(updateGamemode, except: this.Id);
+
+        // 4. Feedback
+        SendPacket(new Aurora.Protocol.Play.SystemChatMessagePacket { Content = $"§aSet game mode to {newMode} Mode" });
+    }
+
+    private void RespawnPlayer()
+    {
+        if (Player == null) return;
+
+        Player.ResetForRespawn();
+
+        // 1. Send Respawn Packet (0x4C)
+        var respawn = new Aurora.Protocol.Play.RespawnPacket
+        {
+            Dimension = 0,
+            DimensionName = "minecraft:overworld",
+            GameMode = (byte)Player.GameMode,
+            PreviousGameMode = 255,
+            CopyMetadata = 1
+        };
+        SendPacket(respawn);
+
+        // Client unloads all chunks upon respawn; clear tracker so spawn chunks are resent
+        _loadedChunks.Clear();
+
+        // 2. Send Abilities (0x3A)
+        SendPlayerAbilities();
+
+        // 3. Send Health (0x62)
+        SendPacket(new Aurora.Protocol.Play.SetHealthPacket
+        {
+            Health = Player.Health,
+            Food = Player.FoodLevel,
+            FoodSaturation = Player.FoodSaturation
+        });
+
+        // 4. Find spawn position & send Center View Position (0x58)
+        var spawn = _worldManager.FindSpawnPosition();
+        this.X = spawn.X;
+        this.Y = spawn.Y;
+        this.Z = spawn.Z;
+        Player.Position = new System.Numerics.Vector3((float)this.X, (float)this.Y, (float)this.Z);
+
+        int spawnChunkX = (int)Math.Floor(this.X) >> 4;
+        int spawnChunkZ = (int)Math.Floor(this.Z) >> 4;
+        SendCenterViewPosition(spawnChunkX, spawnChunkZ);
+
+        // 5. Send immediate 3x3 spawn chunks with chunk batching to dismiss loading screen instantly!
+        SendImmediateSpawnChunks(spawnChunkX, spawnChunkZ);
+
+        // 6. Send Player Position (0x42)
+        var playerPos = new Aurora.Protocol.Play.PlayerPositionPacket
+        {
+            TeleportId = 2,
+            X = this.X,
+            Y = this.Y,
+            Z = this.Z
+        };
+        SendPacket(playerPos);
+
+        // 7. Stream outer chunks asynchronously in background
+        _ = System.Threading.Tasks.Task.Run(() => UpdatePlayerChunks(spawnChunkX, spawnChunkZ));
+    }
+
+    public void SavePlayerData()
+    {
+        if (Player != null)
+        {
+            Player.Position = new System.Numerics.Vector3((float)X, (float)Y, (float)Z);
+            Player.Yaw = Yaw;
+            Player.Pitch = Pitch;
+            Player.SelectedSlot = _selectedSlot;
+            try
+            {
+                PlayerDataStorage.Save(Player, "world");
+            }
+#pragma warning disable CA1031
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Network] Error saving player data for '{Username}': {ex.Message}");
+            }
+#pragma warning restore CA1031
+        }
+    }
+
     public void Disconnect()
     {
         if (!_cts.IsCancellationRequested)
         {
+            SavePlayerData();
             _cts.Cancel();
             try { _socket.Shutdown(SocketShutdown.Both); } catch (SocketException) { } catch (ObjectDisposedException) { }
             try { _socket.Close(); } catch (SocketException) { } catch (ObjectDisposedException) { }

@@ -32,6 +32,13 @@ public ref struct PacketReader
         return (ushort)val;
     }
 
+    public short ReadShort()
+    {
+        if (!Reader.TryReadBigEndian(out short val))
+            throw new InvalidOperationException("Incomplete Short");
+        return val;
+    }
+
     public string ReadString(int maxLength = 32767)
     {
         int length = ReadVarInt();

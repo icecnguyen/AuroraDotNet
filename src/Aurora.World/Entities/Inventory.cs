@@ -36,4 +36,12 @@ public sealed class Inventory
 
         _slots[slot] = item;
     }
+
+    public void Clear()
+    {
+        for (int i = 0; i < _slots.Length; i++)
+        {
+            _slots[i] = ItemStack.Empty;
+        }
+    }
 }

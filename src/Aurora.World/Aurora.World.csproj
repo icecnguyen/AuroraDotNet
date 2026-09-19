@@ -1,7 +1,9 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\Aurora.Core\Aurora.Core.csproj" />
+    <EmbeddedResource Include="Data\blocks.bin" />
+    <EmbeddedResource Include="Data\items.bin" />
   </ItemGroup>
 
   <PropertyGroup>

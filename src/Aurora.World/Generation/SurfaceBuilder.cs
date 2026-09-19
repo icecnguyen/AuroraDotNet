@@ -156,6 +156,90 @@ public sealed class SurfaceBuilder
                     break;
                 }
 
+                case BiomeType.Badlands:
+                {
+                    // Grand Canyon Terracotta strata layering
+                    chunk.SetBlockState(x, highestSolidY, z, (random.Next(100) < 40) ? Block.RedSand : Block.Terracotta);
+                    for (int y = highestSolidY; y >= 60; y--)
+                    {
+                        if (chunk.GetBlockState(x, y, z) == Block.Stone)
+                        {
+                            int band = Math.Abs(y) % 16;
+                            ushort terracotta = band switch
+                            {
+                                0 or 1 => Block.OrangeTerracotta,
+                                2 or 3 => Block.Terracotta,
+                                4 or 5 => Block.YellowTerracotta,
+                                6 or 7 => Block.WhiteTerracotta,
+                                8 or 9 => Block.BrownTerracotta,
+                                10 or 11 => Block.RedTerracotta,
+                                12 => Block.LightGrayTerracotta,
+                                _ => Block.OrangeTerracotta
+                            };
+                            chunk.SetBlockState(x, y, z, terracotta);
+                        }
+                    }
+                    break;
+                }
+
+                case BiomeType.Swamp:
+                {
+                    // Muddy lowland with pools of water
+                    int roll = random.Next(100);
+                    ushort top = (roll < 55) ? Block.GrassBlock : (roll < 90) ? Block.Mud : Block.Dirt;
+                    chunk.SetBlockState(x, highestSolidY, z, top);
+                    for (int d = 1; d <= 3; d++)
+                    {
+                        int subY = highestSolidY - d;
+                        if (subY > -64 && chunk.GetBlockState(x, subY, z) == Block.Stone)
+                            chunk.SetBlockState(x, subY, z, (d <= 2) ? Block.Mud : Block.Dirt);
+                    }
+                    break;
+                }
+
+                case BiomeType.Savanna:
+                {
+                    // Dry grassland with coarse dirt patches
+                    int roll = random.Next(100);
+                    ushort top = (roll < 75) ? Block.GrassBlock : Block.CoarseDirt;
+                    chunk.SetBlockState(x, highestSolidY, z, top);
+                    for (int d = 1; d <= 3; d++)
+                    {
+                        int subY = highestSolidY - d;
+                        if (subY > -64 && chunk.GetBlockState(x, subY, z) == Block.Stone)
+                            chunk.SetBlockState(x, subY, z, Block.Dirt);
+                    }
+                    break;
+                }
+
+                case BiomeType.Jungle:
+                {
+                    // Lush rainforest floor
+                    int roll = random.Next(100);
+                    ushort top = (roll < 80) ? Block.GrassBlock : Block.Podzol;
+                    chunk.SetBlockState(x, highestSolidY, z, top);
+                    for (int d = 1; d <= 3; d++)
+                    {
+                        int subY = highestSolidY - d;
+                        if (subY > -64 && chunk.GetBlockState(x, subY, z) == Block.Stone)
+                            chunk.SetBlockState(x, subY, z, Block.Dirt);
+                    }
+                    break;
+                }
+
+                case BiomeType.DarkForest:
+                {
+                    // Deep dark loam floor
+                    chunk.SetBlockState(x, highestSolidY, z, Block.GrassBlock);
+                    for (int d = 1; d <= 4; d++)
+                    {
+                        int subY = highestSolidY - d;
+                        if (subY > -64 && chunk.GetBlockState(x, subY, z) == Block.Stone)
+                            chunk.SetBlockState(x, subY, z, (d == 1 && random.Next(100) < 30) ? Block.CoarseDirt : Block.Dirt);
+                    }
+                    break;
+                }
+
                 default: // Plains, Forest, BirchForest, etc.
                 {
                     // Shoreline transition: if right at water level (63-64), chance of sand shore

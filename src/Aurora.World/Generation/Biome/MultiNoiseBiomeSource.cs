@@ -51,14 +51,14 @@ public sealed class MultiNoiseBiomeSource
                 new Parameter(-1.0, 1.0),
                 0.0), BiomeType.Beach),
 
-            // 4. Desert (Hot & Dry inland)
+            // 4. Desert (Hot & Hyper-Arid inland)
             new(new ParameterPoint(
                 new Parameter(0.5, 1.5),
-                new Parameter(-1.5, -0.15),
+                new Parameter(-1.5, -0.65),
                 new Parameter(-0.02, 1.5),
                 new Parameter(-1.0, 1.0),
                 new Parameter(-1.0, 1.0),
-                new Parameter(-1.0, 1.0),
+                new Parameter(-1.0, 0.2),
                 0.0), BiomeType.Desert),
 
             // 5. Jagged Peaks (High inland peaks, low erosion, high weirdness)
@@ -104,7 +104,7 @@ public sealed class MultiNoiseBiomeSource
             // 9. Forest (Lush temperate wooded land)
             new(new ParameterPoint(
                 new Parameter(-0.15, 0.4),
-                new Parameter(0.2, 1.0),
+                new Parameter(0.15, 0.5),
                 new Parameter(-0.02, 1.5),
                 new Parameter(-1.0, 1.0),
                 new Parameter(-1.0, 1.0),
@@ -119,7 +119,57 @@ public sealed class MultiNoiseBiomeSource
                 new Parameter(-1.0, 1.0),
                 new Parameter(-1.0, 1.0),
                 new Parameter(-1.0, 1.0),
-                0.0), BiomeType.Plains)
+                0.0), BiomeType.Plains),
+
+            // 11. Swamp (Warm, high humidity, flat lowland)
+            new(new ParameterPoint(
+                new Parameter(0.1, 0.55),
+                new Parameter(0.5, 1.2),
+                new Parameter(-0.08, 0.25),
+                new Parameter(0.2, 0.8),
+                new Parameter(-1.0, 1.0),
+                new Parameter(-1.0, 1.0),
+                0.0), BiomeType.Swamp),
+
+            // 12. Savanna (Hot, dry grassland)
+            new(new ParameterPoint(
+                new Parameter(0.5, 1.1),
+                new Parameter(-0.65, -0.15),
+                new Parameter(0.0, 1.0),
+                new Parameter(-0.5, 0.5),
+                new Parameter(-1.0, 1.0),
+                new Parameter(-1.0, 1.0),
+                0.0), BiomeType.Savanna),
+
+            // 13. Jungle (Hot, ultra-humid dense rainforest)
+            new(new ParameterPoint(
+                new Parameter(0.6, 1.3),
+                new Parameter(0.6, 1.4),
+                new Parameter(0.0, 1.0),
+                new Parameter(-0.6, 0.4),
+                new Parameter(-1.0, 1.0),
+                new Parameter(-1.0, 1.0),
+                0.0), BiomeType.Jungle),
+
+            // 14. Dark Forest (Temperate, dense humid dark canopy)
+            new(new ParameterPoint(
+                new Parameter(0.0, 0.35),
+                new Parameter(0.5, 1.1),
+                new Parameter(0.05, 0.8),
+                new Parameter(-0.5, 0.5),
+                new Parameter(-1.0, 1.0),
+                new Parameter(-1.0, -0.2),
+                0.0), BiomeType.DarkForest),
+
+            // 15. Badlands (Ultra-hot, arid terracotta canyons)
+            new(new ParameterPoint(
+                new Parameter(0.8, 1.5),
+                new Parameter(-1.5, -0.6),
+                new Parameter(0.1, 1.2),
+                new Parameter(0.1, 0.7),
+                new Parameter(-1.0, 1.0),
+                new Parameter(0.2, 1.5),
+                0.0), BiomeType.Badlands)
         };
         return new MultiNoiseBiomeSource(mappings);
     }

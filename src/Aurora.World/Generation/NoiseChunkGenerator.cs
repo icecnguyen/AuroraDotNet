@@ -10,6 +10,8 @@ using Aurora.World.Generation.Biome;
 using Aurora.World.Generation.Density;
 using Aurora.World.Generation.Features;
 using Aurora.World.Generation.Structures;
+using Aurora.World.Generation.Carvers;
+using Aurora.World.Generation.Aquifers;
 
 namespace Aurora.World.Generation;
 
@@ -20,6 +22,9 @@ public sealed class NoiseChunkGenerator
     private readonly int _seed;
     private readonly List<PlacedFeature> _overworldOres;
     private readonly JigsawManager _jigsawManager;
+    private readonly CaveCarver _caveCarver;
+    private readonly CanyonCarver _canyonCarver;
+    private readonly AquiferSampler _aquiferSampler;
 
     private readonly NoiseDensityFunction _terrainDetail;
     private readonly NoiseDensityFunction _caveNoise3D;
@@ -98,8 +103,18 @@ public sealed class NoiseChunkGenerator
             // Diamond Ore: Deepslate (-64 to 0), 7 veins per chunk, size 8 (more frequent at bottom)
             new PlacedFeature(new OreFeature(new OreConfiguration(Block.Deepslate, Block.DeepslateDiamondOre, 8)), 7, new TrapezoidHeightProvider(-144, 16, 4)),
             // Lapis Ore: Stone & Deepslate (-32 to 32), 3 veins per chunk, size 7
-            new PlacedFeature(new OreFeature(new OreConfiguration(Block.Stone, Block.LapisOre, 7)), 3, new TrapezoidHeightProvider(-32, 32))
+            new PlacedFeature(new OreFeature(new OreConfiguration(Block.Stone, Block.LapisOre, 7)), 3, new TrapezoidHeightProvider(-32, 32)),
+
+            // Geologic Stone & Deepslate Blobs
+            new PlacedFeature(new OreFeature(new OreConfiguration(Block.Stone, Block.Granite, 48)), 6, new UniformHeightProvider(0, 128)),
+            new PlacedFeature(new OreFeature(new OreConfiguration(Block.Stone, Block.Diorite, 48)), 6, new UniformHeightProvider(0, 128)),
+            new PlacedFeature(new OreFeature(new OreConfiguration(Block.Stone, Block.Andesite, 48)), 6, new UniformHeightProvider(0, 128)),
+            new PlacedFeature(new OreFeature(new OreConfiguration(Block.Deepslate, Block.Tuff, 48)), 8, new UniformHeightProvider(-64, 0))
         };
+
+        _caveCarver = new CaveCarver(seed);
+        _canyonCarver = new CanyonCarver(seed);
+        _aquiferSampler = new AquiferSampler(seed);
         
         _jigsawManager = new JigsawManager(poolName => {
             if (poolName == "minecraft:village/plains/houses")
@@ -262,8 +277,35 @@ public sealed class NoiseChunkGenerator
                                             highestSolidY[colIdx] = blockY;
                                         }
                                     }
+                                    else if (blockY <= -54 && blockY > -60)
+                                    {
+                                        // Deep subterranean Lava Lakes
+                                        chunk.SetBlockState(blockX, blockY, blockZ, Block.Lava);
+                                    }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            // 2.5 Carver Pass: Cave Worms & Canyon Ravines with Aquifers
+            _caveCarver.Carve(chunk, chunkX, chunkZ, _aquiferSampler);
+            _canyonCarver.Carve(chunk, chunkX, chunkZ, _aquiferSampler);
+
+            // Recompute highestSolidY after carving
+            for (int x = 0; x < 16; x++)
+            {
+                for (int z = 0; z < 16; z++)
+                {
+                    int col = x * 16 + z;
+                    for (int y = highestSolidY[col]; y >= -64; y--)
+                    {
+                        ushort b = chunk.GetBlockState(x, y, z);
+                        if (b != Block.Air && b != Block.Water && b != Block.Lava)
+                        {
+                            highestSolidY[col] = y;
+                            break;
                         }
                     }
                 }
@@ -355,6 +397,22 @@ public sealed class NoiseChunkGenerator
                                 }
                             }
                         }
+                        // D. Swamp Flora (Blue Orchid)
+                        else if ((surfaceBlock == Block.GrassBlock || surfaceBlock == Block.Mud) && biome == BiomeType.Swamp)
+                        {
+                            if (r < 75 && chunk.GetBlockState(x, highY + 1, z) == Block.Air)
+                            {
+                                chunk.SetBlockState(x, highY + 1, z, Block.BlueOrchid);
+                            }
+                        }
+                        // E. Badlands Flora (Dead Bush on Terracotta / Red Sand)
+                        else if ((surfaceBlock == Block.Terracotta || surfaceBlock == Block.RedSand) && biome == BiomeType.Badlands)
+                        {
+                            if (r < 18 && chunk.GetBlockState(x, highY + 1, z) == Block.Air)
+                            {
+                                chunk.SetBlockState(x, highY + 1, z, Block.DeadBush);
+                            }
+                        }
                     }
                 }
             }
@@ -376,7 +434,11 @@ public sealed class NoiseChunkGenerator
                         BiomeType.BirchForest => 40,  // Birch woodland
                         BiomeType.Taiga => 35,        // Coniferous taiga
                         BiomeType.Plains => 8,        // Sparse plains trees
-                        _ => 0                        // 0 in desert, beach, ocean, snowy peaks!
+                        BiomeType.Savanna => 16,      // Acacia trees
+                        BiomeType.Jungle => 55,       // High density rainforest
+                        BiomeType.DarkForest => 60,   // Ultra-dense dark oak roof
+                        BiomeType.Swamp => 22,        // Swamp oaks with vines
+                        _ => 0                        // 0 in desert, beach, ocean, badlands, snowy peaks!
                     };
 
                     if (treeChancePerThousand == 0) continue;
@@ -418,6 +480,22 @@ public sealed class NoiseChunkGenerator
                     else if (treeBiome == BiomeType.BirchForest)
                     {
                         GenerateBirchTree(chunk, lx, groundY, lz, th);
+                    }
+                    else if (treeBiome == BiomeType.Savanna)
+                    {
+                        GenerateAcaciaTree(chunk, lx, groundY, lz, th);
+                    }
+                    else if (treeBiome == BiomeType.Jungle)
+                    {
+                        GenerateJungleTree(chunk, lx, groundY, lz, th);
+                    }
+                    else if (treeBiome == BiomeType.DarkForest)
+                    {
+                        GenerateDarkOakTree(chunk, lx, groundY, lz, th);
+                    }
+                    else if (treeBiome == BiomeType.Swamp)
+                    {
+                        GenerateSwampTree(chunk, lx, groundY, lz, th);
                     }
                     else
                     {
@@ -584,6 +662,241 @@ public sealed class NoiseChunkGenerator
                         if (chunk.GetBlockState(leafX, ly, leafZ) == Block.Air)
                         {
                             chunk.SetBlockState(leafX, ly, leafZ, Block.SpruceLeaves);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static void GenerateAcaciaTree(Chunk chunk, int lx, int groundY, int lz, uint hash)
+    {
+        int treeHeight = 6 + (int)((hash >> 8) % 3); // 6, 7, 8 blocks tall
+        int dirX = (int)((hash >> 4) % 3) - 1;
+        int dirZ = (int)((hash >> 6) % 3) - 1;
+        if (dirX == 0 && dirZ == 0) dirX = 1;
+
+        int curX = lx;
+        int curZ = lz;
+
+        // Angled Trunk
+        for (int ty = 1; ty <= treeHeight; ty++)
+        {
+            int trunkY = groundY + ty;
+            if (ty >= 3 && ty % 2 == 1)
+            {
+                curX += dirX;
+                curZ += dirZ;
+            }
+
+            if (curX >= 0 && curX < 16 && curZ >= 0 && curZ < 16)
+            {
+                chunk.SetBlockState(curX, trunkY, curZ, Block.AcaciaLog);
+            }
+        }
+        if (lx >= 0 && lx < 16 && lz >= 0 && lz < 16)
+        {
+            chunk.SetBlockState(lx, groundY, lz, Block.Dirt);
+        }
+
+        // Flat umbrella parasol canopy at top (Radius 3)
+        int canopyY = groundY + treeHeight;
+        for (int dx = -3; dx <= 3; dx++)
+        {
+            for (int dz = -3; dz <= 3; dz++)
+            {
+                if (Math.Abs(dx) == 3 && Math.Abs(dz) == 3) continue;
+
+                int leafX = curX + dx;
+                int leafZ = curZ + dz;
+                if (leafX >= 0 && leafX < 16 && leafZ >= 0 && leafZ < 16)
+                {
+                    if (chunk.GetBlockState(leafX, canopyY, leafZ) == Block.Air)
+                        chunk.SetBlockState(leafX, canopyY, leafZ, Block.AcaciaLeaves);
+                }
+            }
+        }
+
+        // 3x3 cap on top of umbrella
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            for (int dz = -1; dz <= 1; dz++)
+            {
+                int leafX = curX + dx;
+                int leafZ = curZ + dz;
+                if (leafX >= 0 && leafX < 16 && leafZ >= 0 && leafZ < 16)
+                {
+                    if (chunk.GetBlockState(leafX, canopyY + 1, leafZ) == Block.Air)
+                        chunk.SetBlockState(leafX, canopyY + 1, leafZ, Block.AcaciaLeaves);
+                }
+            }
+        }
+    }
+
+    private static void GenerateJungleTree(Chunk chunk, int lx, int groundY, int lz, uint hash)
+    {
+        int treeHeight = 11 + (int)((hash >> 8) % 6); // 11 to 16 blocks tall
+
+        // Tall straight Trunk
+        for (int ty = 1; ty <= treeHeight; ty++)
+        {
+            int trunkY = groundY + ty;
+            if (lx >= 0 && lx < 16 && lz >= 0 && lz < 16)
+            {
+                chunk.SetBlockState(lx, trunkY, lz, Block.JungleLog);
+
+                // Hanging vines along the trunk
+                if (lx > 0 && ((hash + ty) % 3 == 0) && chunk.GetBlockState(lx - 1, trunkY, lz) == Block.Air)
+                    chunk.SetBlockState(lx - 1, trunkY, lz, Block.Vine);
+                if (lx < 15 && ((hash + ty * 2) % 3 == 0) && chunk.GetBlockState(lx + 1, trunkY, lz) == Block.Air)
+                    chunk.SetBlockState(lx + 1, trunkY, lz, Block.Vine);
+            }
+        }
+        if (lx >= 0 && lx < 16 && lz >= 0 && lz < 16)
+        {
+            chunk.SetBlockState(lx, groundY, lz, Block.Dirt);
+        }
+
+        // Bushy jungle canopy
+        for (int dy = treeHeight - 2; dy <= treeHeight + 2; dy++)
+        {
+            int ly = groundY + dy;
+            int rad = (dy >= treeHeight + 1) ? 1 : 2;
+
+            for (int dx = -rad; dx <= rad; dx++)
+            {
+                for (int dz = -rad; dz <= rad; dz++)
+                {
+                    if (Math.Abs(dx) == rad && Math.Abs(dz) == rad && (rad > 1 || dy == treeHeight + 2))
+                        continue;
+
+                    int leafX = lx + dx;
+                    int leafZ = lz + dz;
+
+                    if (leafX >= 0 && leafX < 16 && leafZ >= 0 && leafZ < 16)
+                    {
+                        if (chunk.GetBlockState(leafX, ly, leafZ) == Block.Air)
+                        {
+                            chunk.SetBlockState(leafX, ly, leafZ, Block.JungleLeaves);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static void GenerateDarkOakTree(Chunk chunk, int lx, int groundY, int lz, uint hash)
+    {
+        int treeHeight = 6 + (int)((hash >> 8) % 3); // 6 to 8 blocks tall
+
+        // 2x2 Thick Trunk
+        for (int ty = 1; ty <= treeHeight; ty++)
+        {
+            int trunkY = groundY + ty;
+            for (int bx = 0; bx <= 1; bx++)
+            {
+                for (int bz = 0; bz <= 1; bz++)
+                {
+                    int tx = lx + bx;
+                    int tz = lz + bz;
+                    if (tx >= 0 && tx < 16 && tz >= 0 && tz < 16)
+                    {
+                        chunk.SetBlockState(tx, trunkY, tz, Block.DarkOakLog);
+                    }
+                }
+            }
+        }
+        for (int bx = 0; bx <= 1; bx++)
+        {
+            for (int bz = 0; bz <= 1; bz++)
+            {
+                int tx = lx + bx;
+                int tz = lz + bz;
+                if (tx >= 0 && tx < 16 && tz >= 0 && tz < 16)
+                {
+                    chunk.SetBlockState(tx, groundY, tz, Block.Dirt);
+                }
+            }
+        }
+
+        // Massive thick leaf roof (5x5 and 7x7)
+        int canopyY = groundY + treeHeight;
+        for (int dy = -1; dy <= 1; dy++)
+        {
+            int ly = canopyY + dy;
+            int rad = (dy == 1) ? 2 : 3;
+
+            for (int dx = -rad; dx <= rad + 1; dx++)
+            {
+                for (int dz = -rad; dz <= rad + 1; dz++)
+                {
+                    int leafX = lx + dx;
+                    int leafZ = lz + dz;
+
+                    if (leafX >= 0 && leafX < 16 && leafZ >= 0 && leafZ < 16)
+                    {
+                        if (chunk.GetBlockState(leafX, ly, leafZ) == Block.Air)
+                        {
+                            chunk.SetBlockState(leafX, ly, leafZ, Block.DarkOakLeaves);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static void GenerateSwampTree(Chunk chunk, int lx, int groundY, int lz, uint hash)
+    {
+        int treeHeight = 5 + (int)((hash >> 8) % 3); // 5 to 7 blocks tall
+
+        // Trunk
+        for (int ty = 1; ty <= treeHeight; ty++)
+        {
+            int trunkY = groundY + ty;
+            if (lx >= 0 && lx < 16 && lz >= 0 && lz < 16)
+            {
+                chunk.SetBlockState(lx, trunkY, lz, Block.OakLog);
+            }
+        }
+        if (lx >= 0 && lx < 16 && lz >= 0 && lz < 16)
+        {
+            chunk.SetBlockState(lx, groundY, lz, Block.Dirt);
+        }
+
+        // Canopy with drooping vines
+        for (int dy = treeHeight - 1; dy <= treeHeight + 1; dy++)
+        {
+            int ly = groundY + dy;
+            int rad = (dy == treeHeight + 1) ? 1 : 3;
+
+            for (int dx = -rad; dx <= rad; dx++)
+            {
+                for (int dz = -rad; dz <= rad; dz++)
+                {
+                    if (Math.Abs(dx) == rad && Math.Abs(dz) == rad && rad > 1) continue;
+
+                    int leafX = lx + dx;
+                    int leafZ = lz + dz;
+
+                    if (leafX >= 0 && leafX < 16 && leafZ >= 0 && leafZ < 16)
+                    {
+                        if (chunk.GetBlockState(leafX, ly, leafZ) == Block.Air)
+                        {
+                            chunk.SetBlockState(leafX, ly, leafZ, Block.OakLeaves);
+
+                            // Drooping vines on outer leaves
+                            if (dy == treeHeight - 1 && (Math.Abs(dx) == rad || Math.Abs(dz) == rad))
+                            {
+                                int vineLen = 1 + (int)((hash + dx + dz) % 3);
+                                for (int vy = 1; vy <= vineLen; vy++)
+                                {
+                                    int vineY = ly - vy;
+                                    if (vineY > groundY && chunk.GetBlockState(leafX, vineY, leafZ) == Block.Air)
+                                    {
+                                        chunk.SetBlockState(leafX, vineY, leafZ, Block.Vine);
+                                    }
+                                }
+                            }
                         }
                     }
                 }

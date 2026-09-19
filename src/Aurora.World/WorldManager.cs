@@ -2,20 +2,23 @@ using System;
 using System.Collections.Concurrent;
 using Aurora.Core.Math;
 using Aurora.World.Generation;
+using Aurora.World.Storage;
 
 namespace Aurora.World;
 
 /// <summary>
-/// Manages active chunks and terrain generation in memory.
+/// Manages active chunks, terrain generation, and Anvil (.mca) persistence in memory.
 /// </summary>
-public sealed class WorldManager
+public sealed class WorldManager : IDisposable
 {
     private readonly ConcurrentDictionary<ChunkPosition, Chunk> _activeChunks = new();
     private readonly NoiseChunkGenerator _generator;
+    private readonly AnvilWorldStorage _storage;
 
-    public WorldManager(int seed = 12345)
+    public WorldManager(int seed = 12345, string worldDirectory = "world")
     {
         _generator = new NoiseChunkGenerator(seed);
+        _storage = new AnvilWorldStorage(worldDirectory);
     }
 
     public Chunk GetOrGenerateChunk(int cx, int cz)
@@ -23,8 +26,18 @@ public sealed class WorldManager
         var pos = new ChunkPosition(cx, cz);
         return _activeChunks.GetOrAdd(pos, p => 
         {
+            // 1. Try loading existing chunk from Anvil region file (.mca)
+            if (_storage.TryLoadChunk(p, out var savedChunk) && savedChunk != null)
+            {
+                return savedChunk;
+            }
+
+            // 2. Procedural terrain generation
             var chunk = _generator.GenerateChunk(p.X, p.Z);
             Aurora.World.Lighting.LightEngine.InitializeLighting(chunk);
+
+            // 3. Persist new chunk to disk
+            _storage.SaveChunk(chunk);
             return chunk;
         });
     }
@@ -44,6 +57,7 @@ public sealed class WorldManager
         
         // chunk uses local coordinates (0-15) which are handled correctly internally by x & 15
         chunk.SetBlockState(x, y, z, stateId);
+        _storage.SaveChunk(chunk);
     }
 
     public ushort GetBlock(int x, int y, int z)
@@ -99,5 +113,37 @@ public sealed class WorldManager
 
         _cachedSpawnPosition = (0.5, 75.0, 0.5);
         return _cachedSpawnPosition.Value;
+    }
+
+    private readonly ConcurrentDictionary<int, Entities.ItemEntity> _activeItemEntities = new();
+
+    public IEnumerable<Entities.ItemEntity> ItemEntities => _activeItemEntities.Values;
+
+    public void AddItemEntity(Entities.ItemEntity itemEntity)
+    {
+        ArgumentNullException.ThrowIfNull(itemEntity);
+        _activeItemEntities.TryAdd(itemEntity.EntityId, itemEntity);
+    }
+
+    public bool RemoveItemEntity(int entityId)
+    {
+        return _activeItemEntities.TryRemove(entityId, out _);
+    }
+
+    public void Tick()
+    {
+        foreach (var item in _activeItemEntities.Values)
+        {
+            item.Tick(this);
+            if (item.IsDead)
+            {
+                _activeItemEntities.TryRemove(item.EntityId, out _);
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        _storage.Dispose();
     }
 }

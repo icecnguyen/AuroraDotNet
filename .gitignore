@@ -47,4 +47,8 @@ node_modules/
 tools/
 img/
 benchmarks/
-docs/
+
+# Minecraft World Saves
+world/
+**/world/
+*.mca
