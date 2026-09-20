@@ -63,6 +63,7 @@ public sealed class MinecraftConnection : IDisposable
     private readonly HashSet<ChunkPosition> _loadedChunks = new();
     private short _selectedSlot;
     private readonly int[] _hotbarItemIds = new int[9];
+    private int _voidDamageTimer;
 
     private readonly ConnectionManager _connectionManager;
     private readonly Aurora.World.WorldManager _worldManager;
@@ -209,9 +210,184 @@ public sealed class MinecraftConnection : IDisposable
         _connectionManager.BroadcastPacket(meta);
     }
 
+    private void UpdatePlayerMovement(double newX, double newY, double newZ, bool onGround)
+    {
+        double oldY = Y;
+        X = newX;
+        Y = newY;
+        Z = newZ;
+
+        if (Player != null)
+        {
+            Player.Position = new System.Numerics.Vector3((float)X, (float)Y, (float)Z);
+            Player.OnGround = onGround;
+
+            if (Player.GameMode == GameMode.Survival)
+            {
+                if (newY < oldY)
+                {
+                    Player.FallDistance += (float)(oldY - newY);
+                }
+                else if (newY > oldY)
+                {
+                    Player.FallDistance = 0.0f;
+                }
+
+                if (onGround)
+                {
+                    if (Player.FallDistance > 3.0f)
+                    {
+                        float damage = Player.FallDistance - 3.0f;
+                        ApplyDamage(damage);
+                    }
+                    Player.FallDistance = 0.0f;
+                }
+            }
+        }
+    }
+
+    public void ApplyDamage(float amount, bool isVoid = false)
+    {
+        if (Player == null || !Player.IsAlive || Player.GameMode != GameMode.Survival) return;
+        if (!isVoid && Player.InvulnerabilityTicks > 0) return;
+
+        Player.Damage(amount);
+        if (!isVoid) Player.InvulnerabilityTicks = 10;
+
+        _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityEventPacket
+        {
+            EntityId = this.EntityId,
+            EventId = 2 // Hurt animation (red flash)
+        });
+
+        SendHealthUpdate();
+
+        if (Player.Health <= 0)
+        {
+            OnPlayerDied();
+        }
+    }
+
+    private void OnPlayerDied()
+    {
+        if (Player == null) return;
+
+        // Broadcast death animation
+        _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityEventPacket
+        {
+            EntityId = this.EntityId,
+            EventId = 3 // Death animation
+        });
+
+        // Drop all inventory items into world
+        for (int i = 0; i < Player.Inventory.Capacity; i++)
+        {
+            var stack = Player.Inventory.GetItem(i);
+            if (!stack.IsEmpty)
+            {
+                Player.Inventory.SetItem(i, ItemStack.Empty);
+                var dropPos = new System.Numerics.Vector3((float)X, (float)Y + 0.5f, (float)Z);
+#pragma warning disable CA5394 // Random is used for game physics jitter
+                var dropVel = new System.Numerics.Vector3(
+                    (float)(Random.Shared.NextDouble() * 0.4 - 0.2),
+                    0.25f,
+                    (float)(Random.Shared.NextDouble() * 0.4 - 0.2));
+#pragma warning restore CA5394
+                SpawnItemInWorld(dropPos, stack, dropVel, pickupDelay: 40);
+            }
+        }
+
+        // Resync empty slots to player
+        for (short s = 0; s < 46; s++)
+        {
+            SendPacket(new Aurora.Protocol.Play.SetContainerSlotPacket
+            {
+                WindowId = 0,
+                StateId = 0,
+                Slot = s,
+                ItemId = 0,
+                ItemCount = 0
+            });
+        }
+    }
+
+    private void SendHealthUpdate()
+    {
+        if (Player == null) return;
+        SendPacket(new Aurora.Protocol.Play.SetHealthPacket
+        {
+            Health = Player.Health,
+            Food = Player.FoodLevel,
+            FoodSaturation = Player.FoodSaturation
+        });
+    }
+
+    public void Tick()
+    {
+        if (Player == null || !Player.IsAlive) return;
+
+        if (Player.GameMode == GameMode.Survival)
+        {
+            if (Player.InvulnerabilityTicks > 0)
+            {
+                Player.InvulnerabilityTicks--;
+            }
+
+            // 1. Void Damage
+            if (Y < -64.0)
+            {
+                if (Y < -128.0)
+                {
+                    ApplyDamage(Player.Health, isVoid: true);
+                }
+                else
+                {
+                    _voidDamageTimer++;
+                    if (_voidDamageTimer >= 10) // Every 0.5s
+                    {
+                        _voidDamageTimer = 0;
+                        ApplyDamage(4.0f, isVoid: true);
+                    }
+                }
+            }
+            else
+            {
+                _voidDamageTimer = 0;
+            }
+
+            // 2. Underwater / Drowning
+            int headX = (int)Math.Floor(X);
+            int headY = (int)Math.Floor(Y + 1.6);
+            int headZ = (int)Math.Floor(Z);
+            ushort headBlock = _worldManager.GetBlock(headX, headY, headZ);
+            string blockName = BlockRegistry.GetBlockName(headBlock);
+            bool isWater = headBlock == Block.Water || blockName.Contains("water", StringComparison.Ordinal);
+
+            Player.BreathManager.Tick(Player, isWater, out bool tookDrowningDamage);
+            if (tookDrowningDamage)
+            {
+                ApplyDamage(Aurora.World.Gameplay.BreathManager.DrowningDamage);
+            }
+
+            // 3. Hunger simulation & natural regen & starvation
+            Player.HungerManager.Tick(Player, out bool hungerChanged);
+            if (hungerChanged)
+            {
+                SendHealthUpdate();
+                if (Player.Health <= 0)
+                {
+                    OnPlayerDied();
+                }
+            }
+        }
+
+        // 4. Check item pickups periodically every tick
+        CheckItemPickups();
+    }
+
     private void CheckItemPickups()
     {
-        if (Player == null || Player.GameMode == GameMode.Spectator) return;
+        if (Player == null || Player.GameMode == GameMode.Spectator || !Player.IsAlive) return;
 
         var playerPos = new System.Numerics.Vector3((float)X, (float)Y, (float)Z);
         foreach (var item in _worldManager.ItemEntities)
@@ -223,7 +399,7 @@ public sealed class MinecraftConnection : IDisposable
             {
                 var stack = item.Item;
                 int beforeCount = stack.Count;
-                if (Player.TryPickupItem(ref stack))
+                if (Player.TryPickupItem(ref stack, out int changedSlot))
                 {
                     int pickedUpCount = beforeCount - stack.Count;
                     item.Item = stack;
@@ -266,6 +442,20 @@ public sealed class MinecraftConnection : IDisposable
                         ItemId = currentHeld.ItemId,
                         ItemCount = currentHeld.Count
                     });
+
+                    // 4. Synchronize changed container slot to player so item appears in UI!
+                    if (changedSlot >= 0)
+                    {
+                        var updated = Player.Inventory.GetItem(changedSlot);
+                        SendPacket(new Aurora.Protocol.Play.SetContainerSlotPacket
+                        {
+                            WindowId = 0,
+                            StateId = 0,
+                            Slot = (short)changedSlot,
+                            ItemId = updated.ItemId,
+                            ItemCount = updated.Count
+                        });
+                    }
                 }
             }
         }
@@ -804,12 +994,7 @@ public sealed class MinecraftConnection : IDisposable
                 int oldChunkX = (int)Math.Floor(X) >> 4;
                 int oldChunkZ = (int)Math.Floor(Z) >> 4;
 
-                X = pos.X; Y = pos.Y; Z = pos.Z;
-                if (Player != null)
-                {
-                    Player.Position = new System.Numerics.Vector3((float)X, (float)Y, (float)Z);
-                    Player.OnGround = pos.OnGround;
-                }
+                UpdatePlayerMovement(pos.X, pos.Y, pos.Z, pos.OnGround);
 
                 int newChunkX = (int)Math.Floor(X) >> 4;
                 int newChunkZ = (int)Math.Floor(Z) >> 4;
@@ -836,14 +1021,12 @@ public sealed class MinecraftConnection : IDisposable
                 int oldChunkX = (int)Math.Floor(X) >> 4;
                 int oldChunkZ = (int)Math.Floor(Z) >> 4;
 
-                X = posRot.X; Y = posRot.Y; Z = posRot.Z;
+                UpdatePlayerMovement(posRot.X, posRot.Y, posRot.Z, posRot.OnGround);
                 Yaw = posRot.Yaw; Pitch = posRot.Pitch;
                 if (Player != null)
                 {
-                    Player.Position = new System.Numerics.Vector3((float)X, (float)Y, (float)Z);
                     Player.Yaw = Yaw;
                     Player.Pitch = Pitch;
-                    Player.OnGround = posRot.OnGround;
                 }
 
                 int newChunkX = (int)Math.Floor(X) >> 4;
@@ -961,15 +1144,20 @@ public sealed class MinecraftConnection : IDisposable
 
                     if (Player?.GameMode == GameMode.Survival)
                     {
-                        var drop = Aurora.World.BlockDropRegistry.GetDrop(oldBlock);
-                        if (!drop.IsEmpty)
+                        int heldId = Player.GetHeldItem().ItemId;
+                        if (Aurora.World.Gameplay.BlockHardnessRegistry.CanHarvest(oldBlock, heldId))
                         {
-                            var dropPos = new System.Numerics.Vector3(position.X + 0.5f, position.Y + 0.25f, position.Z + 0.5f);
+                            var drop = Aurora.World.BlockDropRegistry.GetDrop(oldBlock);
+                            if (!drop.IsEmpty)
+                            {
+                                var dropPos = new System.Numerics.Vector3(position.X + 0.5f, position.Y + 0.25f, position.Z + 0.5f);
 #pragma warning disable CA5394 // Random is used for game physics jitter
-                            var dropVel = new System.Numerics.Vector3((float)(Random.Shared.NextDouble() * 0.2 - 0.1), 0.2f, (float)(Random.Shared.NextDouble() * 0.2 - 0.1));
+                                var dropVel = new System.Numerics.Vector3((float)(Random.Shared.NextDouble() * 0.2 - 0.1), 0.2f, (float)(Random.Shared.NextDouble() * 0.2 - 0.1));
 #pragma warning restore CA5394
-                            SpawnItemInWorld(dropPos, drop, dropVel, pickupDelay: 10);
+                                SpawnItemInWorld(dropPos, drop, dropVel, pickupDelay: 10);
+                            }
                         }
+                        Aurora.World.Gameplay.HungerManager.AddExhaustion(Player, 0.005f);
                     }
                 }
                 else if (status == 3 || status == 4) // 3 = Drop entire stack (Ctrl+Q), 4 = Drop 1 item (Q)
@@ -1204,6 +1392,15 @@ public sealed class MinecraftConnection : IDisposable
                                 : ItemStack.Empty;
                             Player.Inventory.SetItem(36 + _selectedSlot, newStack);
                             _hotbarItemIds[_selectedSlot] = newStack.ItemId;
+                            SendPacket(new Aurora.Protocol.Play.SetContainerSlotPacket
+                            {
+                                WindowId = 0,
+                                StateId = 0,
+                                Slot = (short)(36 + _selectedSlot),
+                                ItemId = newStack.ItemId,
+                                ItemCount = newStack.Count
+                            });
+
                             _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEquipmentPacket
                             {
                                 EntityId = this.EntityId,
@@ -1218,6 +1415,119 @@ public sealed class MinecraftConnection : IDisposable
                 if (place.Sequence > 0)
                 {
                     SendPacket(new Aurora.Protocol.Play.AcknowledgeBlockChangePacket { SequenceId = place.Sequence });
+                }
+            }
+            else if (packetId == 0x3D) // Use Item (Eat food / interact)
+            {
+                var use = new Aurora.Protocol.Play.UseItemPacket();
+                use.Read(ref reader);
+
+                if (Player != null)
+                {
+                    var held = Player.GetHeldItem();
+                    if (!held.IsEmpty && Aurora.World.Gameplay.FoodRegistry.TryGetFood(held.ItemId, out var food))
+                    {
+                        if (Player.FoodLevel < 20 || food.CanAlwaysEat)
+                        {
+                            Aurora.World.Gameplay.HungerManager.Eat(Player, food.Nutrition, food.Saturation);
+
+                            // Decrement held item in Survival
+                            if (Player.GameMode == GameMode.Survival)
+                            {
+                                int newCount = held.Count - 1;
+                                var newHeld = newCount > 0 ? new ItemStack(held.ItemId, (byte)newCount) : ItemStack.Empty;
+                                Player.SetHeldItem(newHeld);
+                                _hotbarItemIds[_selectedSlot] = newHeld.ItemId;
+
+                                SendPacket(new Aurora.Protocol.Play.SetContainerSlotPacket
+                                {
+                                    WindowId = 0,
+                                    StateId = 0,
+                                    Slot = (short)(36 + _selectedSlot),
+                                    ItemId = newHeld.ItemId,
+                                    ItemCount = newHeld.Count
+                                });
+
+                                _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEquipmentPacket
+                                {
+                                    EntityId = this.EntityId,
+                                    Slot = 0,
+                                    ItemId = newHeld.ItemId,
+                                    ItemCount = newHeld.Count
+                                });
+                            }
+
+                            // Broadcast bite / use stop animation
+                            _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.EntityEventPacket
+                            {
+                                EntityId = this.EntityId,
+                                EventId = 9 // Item use stop / finish
+                            });
+
+                            SendHealthUpdate();
+                        }
+                    }
+                }
+
+                if (use.Sequence > 0)
+                {
+                    SendPacket(new Aurora.Protocol.Play.AcknowledgeBlockChangePacket { SequenceId = use.Sequence });
+                }
+            }
+            else if (packetId == 0x10) // Click Container
+            {
+                var click = new Aurora.Protocol.Play.ClickContainerPacket();
+                click.Read(ref reader);
+
+                if (Player != null && click.WindowId == 0)
+                {
+                    // If output slot 0 was clicked and had an item, consume crafting inputs
+                    if (click.Slot == 0)
+                    {
+                        var output = Player.Inventory.GetItem(0);
+                        if (!output.IsEmpty)
+                        {
+                            Aurora.World.Gameplay.CraftingManager.ConsumeCraftingInputs(Player.Inventory);
+                        }
+                    }
+
+                    // Apply changed slots
+                    foreach (var (slotId, itemId, count) in click.ChangedSlots)
+                    {
+                        if (slotId >= 0 && slotId < Player.Inventory.Capacity)
+                        {
+                            Player.Inventory.SetItem(slotId, count > 0 ? new ItemStack(itemId, (byte)count) : ItemStack.Empty);
+                        }
+                    }
+
+                    // Update 2x2 crafting result
+                    Aurora.World.Gameplay.CraftingManager.UpdateCraftingResult(Player.Inventory);
+
+                    // Resync crafting result (slot 0)
+                    var result = Player.Inventory.GetItem(0);
+                    SendPacket(new Aurora.Protocol.Play.SetContainerSlotPacket
+                    {
+                        WindowId = 0,
+                        StateId = click.StateId,
+                        Slot = 0,
+                        ItemId = result.ItemId,
+                        ItemCount = result.Count
+                    });
+
+                    // Update hotbar cache and sync equipment
+                    for (int i = 0; i < 9; i++)
+                    {
+                        _hotbarItemIds[i] = Player.GetHotbarItem(i).ItemId;
+                    }
+
+                    var currentHeld = Player.GetHeldItem();
+                    _connectionManager.BroadcastPacket(new Aurora.Protocol.Play.SetEquipmentPacket
+                    {
+                        EntityId = this.EntityId,
+                        Slot = 0,
+                        ItemId = currentHeld.ItemId,
+                        ItemCount = currentHeld.Count
+                    });
                 }
             }
             else if (packetId == 0x05 || packetId == 0x06) // Chat Command (0x05) or Chat Command Signed (0x06)

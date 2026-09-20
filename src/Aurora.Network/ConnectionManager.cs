@@ -35,6 +35,17 @@ public sealed class ConnectionManager : IDisposable
 
     public IEnumerable<MinecraftConnection> Players => System.Linq.Enumerable.Where(_connections.Values, c => c.CurrentState == 4);
 
+    public void Tick()
+    {
+        foreach (var connection in _connections.Values)
+        {
+            if (connection.CurrentState == 4)
+            {
+                connection.Tick();
+            }
+        }
+    }
+
     public void BroadcastPacket(Aurora.Protocol.IPacket packet, Guid? except = null)
     {
         foreach (var connection in _connections.Values)

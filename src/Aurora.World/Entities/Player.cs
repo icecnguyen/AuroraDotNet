@@ -30,6 +30,11 @@ public sealed class Player : Entity
     public short Air { get; set; } = 300;
     public short Fire { get; set; } = -20;
     public int Score { get; set; }
+    public float FallDistance { get; set; }
+    public int InvulnerabilityTicks { get; set; }
+
+    public Gameplay.HungerManager HungerManager { get; } = new();
+    public Gameplay.BreathManager BreathManager { get; } = new();
 
     public bool IsSneaking { get; set; }
     public bool IsSprinting { get; set; }
@@ -90,16 +95,20 @@ public sealed class Player : Entity
     public void ResetForRespawn()
     {
         Health = 20.0f;
-        FoodLevel = 20;
-        FoodSaturation = 5.0f;
-        FoodExhaustion = 0.0f;
         Air = 300;
         Fire = -20;
+        FallDistance = 0.0f;
+        InvulnerabilityTicks = 0;
+        HungerManager.Restart(this);
+        BreathManager.Reset(this);
     }
 
-    public bool TryPickupItem(ref ItemStack stack)
+    public bool TryPickupItem(ref ItemStack stack, out int changedSlot)
     {
+        changedSlot = -1;
         if (stack.IsEmpty) return false;
+
+        bool anyPickedUp = false;
 
         // 1. Try merging into existing matching stacks in hotbar (36..44) and storage (9..35)
         for (int i = 36; i <= 44; i++)
@@ -111,6 +120,8 @@ public sealed class Player : Entity
                 Inventory.SetItem(i, new ItemStack(stack.ItemId, (byte)(current.Count + canAdd)));
                 int remaining = stack.Count - canAdd;
                 stack = remaining > 0 ? new ItemStack(stack.ItemId, (byte)remaining) : ItemStack.Empty;
+                changedSlot = i;
+                anyPickedUp = true;
                 if (stack.IsEmpty) return true;
             }
         }
@@ -124,6 +135,8 @@ public sealed class Player : Entity
                 Inventory.SetItem(i, new ItemStack(stack.ItemId, (byte)(current.Count + canAdd)));
                 int remaining = stack.Count - canAdd;
                 stack = remaining > 0 ? new ItemStack(stack.ItemId, (byte)remaining) : ItemStack.Empty;
+                changedSlot = i;
+                anyPickedUp = true;
                 if (stack.IsEmpty) return true;
             }
         }
@@ -136,6 +149,7 @@ public sealed class Player : Entity
             {
                 Inventory.SetItem(i, stack);
                 stack = ItemStack.Empty;
+                changedSlot = i;
                 return true;
             }
         }
@@ -147,11 +161,17 @@ public sealed class Player : Entity
             {
                 Inventory.SetItem(i, stack);
                 stack = ItemStack.Empty;
+                changedSlot = i;
                 return true;
             }
         }
 
-        return false;
+        return anyPickedUp;
+    }
+
+    public bool TryPickupItem(ref ItemStack stack)
+    {
+        return TryPickupItem(ref stack, out _);
     }
 
     public ItemStack DropHeldItem(bool dropEntireStack)

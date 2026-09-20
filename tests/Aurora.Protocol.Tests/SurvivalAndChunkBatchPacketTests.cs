@@ -133,4 +133,110 @@ public class SurvivalAndChunkBatchPacketTests
         Assert.Equal(0, removedComponents);
         Assert.Equal(0xFF, terminator);
     }
+
+    [Fact]
+    public void EntityEventPacketRoundTrips()
+    {
+        var packet = new EntityEventPacket
+        {
+            EntityId = 1234,
+            EventId = 2 // Hurt
+        };
+        Assert.Equal(0x1F, packet.PacketId);
+
+        byte[] bytes = WriteToBytes(packet);
+        var seq = new ReadOnlySequence<byte>(bytes);
+        var reader = new PacketReader(seq);
+        var readPacket = new EntityEventPacket();
+        readPacket.Read(ref reader);
+
+        Assert.Equal(1234, readPacket.EntityId);
+        Assert.Equal(2, readPacket.EventId);
+    }
+
+    [Fact]
+    public void SetContainerSlotPacketRoundTrips()
+    {
+        var packet = new SetContainerSlotPacket
+        {
+            WindowId = 0,
+            StateId = 12,
+            Slot = 36,
+            ItemId = 45,
+            ItemCount = 16
+        };
+        Assert.Equal(0x15, packet.PacketId);
+
+        byte[] bytes = WriteToBytes(packet);
+        var seq = new ReadOnlySequence<byte>(bytes);
+        var reader = new PacketReader(seq);
+        var readPacket = new SetContainerSlotPacket();
+        readPacket.Read(ref reader);
+
+        Assert.Equal(0, readPacket.WindowId);
+        Assert.Equal(12, readPacket.StateId);
+        Assert.Equal(36, readPacket.Slot);
+        Assert.Equal(45, readPacket.ItemId);
+        Assert.Equal(16, readPacket.ItemCount);
+    }
+
+    [Fact]
+    public void UseItemPacketRoundTrips()
+    {
+        var packet = new UseItemPacket
+        {
+            Hand = 0,
+            Sequence = 5,
+            Yaw = 90.0f,
+            Pitch = -45.0f
+        };
+        Assert.Equal(0x3D, packet.PacketId);
+
+        byte[] bytes = WriteToBytes(packet);
+        var seq = new ReadOnlySequence<byte>(bytes);
+        var reader = new PacketReader(seq);
+        var readPacket = new UseItemPacket();
+        readPacket.Read(ref reader);
+
+        Assert.Equal(0, readPacket.Hand);
+        Assert.Equal(5, readPacket.Sequence);
+        Assert.Equal(90.0f, readPacket.Yaw);
+        Assert.Equal(-45.0f, readPacket.Pitch);
+    }
+
+    [Fact]
+    public void ClickContainerPacketRoundTrips()
+    {
+        var packet = new ClickContainerPacket
+        {
+            WindowId = 0,
+            StateId = 3,
+            Slot = 36,
+            Button = 0,
+            Mode = 0,
+            CarriedItemId = 10,
+            CarriedItemCount = 1
+        };
+        packet.ChangedSlots.Add((36, 10, 2));
+
+        Assert.Equal(0x10, packet.PacketId);
+
+        byte[] bytes = WriteToBytes(packet);
+        var seq = new ReadOnlySequence<byte>(bytes);
+        var reader = new PacketReader(seq);
+        var readPacket = new ClickContainerPacket();
+        readPacket.Read(ref reader);
+
+        Assert.Equal(0, readPacket.WindowId);
+        Assert.Equal(3, readPacket.StateId);
+        Assert.Equal(36, readPacket.Slot);
+        Assert.Equal(0, readPacket.Button);
+        Assert.Equal(0, readPacket.Mode);
+        Assert.Single(readPacket.ChangedSlots);
+        Assert.Equal(36, readPacket.ChangedSlots[0].Slot);
+        Assert.Equal(10, readPacket.ChangedSlots[0].ItemId);
+        Assert.Equal(2, readPacket.ChangedSlots[0].ItemCount);
+        Assert.Equal(10, readPacket.CarriedItemId);
+        Assert.Equal(1, readPacket.CarriedItemCount);
+    }
 }

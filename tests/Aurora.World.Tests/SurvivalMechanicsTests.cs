@@ -106,4 +106,124 @@ public class SurvivalMechanicsTests
         item.Tick(null!);
         Assert.True(item.IsDead);
     }
+
+    [Fact]
+    public void HungerManagerDepletesExhaustionAndSaturation()
+    {
+        var player = new Player(new EntityId(1), Guid.NewGuid(), "Steve", GameMode.Survival);
+        var hunger = new Gameplay.HungerManager();
+
+        player.FoodExhaustion = 5.0f;
+        player.FoodSaturation = 3.0f;
+
+        hunger.Tick(player, out bool changed);
+        Assert.True(changed);
+        Assert.Equal(1.0f, player.FoodExhaustion);
+        Assert.Equal(2.0f, player.FoodSaturation);
+    }
+
+    [Fact]
+    public void HungerManagerRapidRegenerationWhenFull()
+    {
+        var player = new Player(new EntityId(1), Guid.NewGuid(), "Steve", GameMode.Survival);
+        var hunger = new Gameplay.HungerManager();
+
+        player.Health = 15.0f;
+        player.FoodLevel = 20;
+        player.FoodSaturation = 5.0f;
+
+        for (int i = 0; i < 10; i++)
+        {
+            hunger.Tick(player, out _);
+        }
+
+        Assert.True(player.Health > 15.0f);
+    }
+
+    [Fact]
+    public void HungerManagerStarvationWhenZero()
+    {
+        var player = new Player(new EntityId(1), Guid.NewGuid(), "Steve", GameMode.Survival);
+        var hunger = new Gameplay.HungerManager();
+
+        player.Health = 20.0f;
+        player.FoodLevel = 0;
+        player.FoodSaturation = 0.0f;
+
+        for (int i = 0; i < 80; i++)
+        {
+            hunger.Tick(player, out _);
+        }
+
+        Assert.Equal(19.0f, player.Health);
+    }
+
+    [Fact]
+    public void BreathManagerDepletesUnderwaterAndRecoversOnSurface()
+    {
+        var player = new Player(new EntityId(1), Guid.NewGuid(), "Steve", GameMode.Survival);
+        var breath = new Gameplay.BreathManager();
+
+        // Submerged
+        breath.Tick(player, isSubmergedInWater: true, out bool damaged);
+        Assert.False(damaged);
+        Assert.Equal(299, player.Air);
+
+        // On surface
+        breath.Tick(player, isSubmergedInWater: false, out damaged);
+        Assert.False(damaged);
+        Assert.Equal(300, player.Air);
+    }
+
+    [Fact]
+    public void FoodRegistryReturnsCorrectValuesForFoods()
+    {
+        Assert.True(Gameplay.FoodRegistry.TryGetFood("apple", out var appleFood));
+        Assert.Equal(4, appleFood.Nutrition);
+        Assert.Equal(2.4f, appleFood.Saturation);
+        Assert.False(appleFood.CanAlwaysEat);
+
+        Assert.True(Gameplay.FoodRegistry.TryGetFood("golden_apple", out var gappleFood));
+        Assert.Equal(4, gappleFood.Nutrition);
+        Assert.True(gappleFood.CanAlwaysEat);
+
+        Assert.False(Gameplay.FoodRegistry.TryGetFood("diamond", out _));
+    }
+
+    [Fact]
+    public void BlockHardnessRegistryReturnsCorrectHardnessAndHarvest()
+    {
+        float stoneHardness = Gameplay.BlockHardnessRegistry.GetHardness(Block.Stone);
+        Assert.Equal(1.5f, stoneHardness);
+
+        float bedrockHardness = Gameplay.BlockHardnessRegistry.GetHardness(Block.Bedrock);
+        Assert.Equal(-1.0f, bedrockHardness);
+
+        int pickId = ItemRegistry.GetItemId("iron_pickaxe");
+        int stickId = ItemRegistry.GetItemId("stick");
+
+        Assert.True(Gameplay.BlockHardnessRegistry.CanHarvest(Block.Stone, pickId));
+        Assert.False(Gameplay.BlockHardnessRegistry.CanHarvest(Block.Stone, stickId));
+    }
+
+    [Fact]
+    public void CraftingManagerCraftsPlanksAndTable()
+    {
+        var player = new Player(new EntityId(1), Guid.NewGuid(), "Steve", GameMode.Survival);
+        int logId = ItemRegistry.GetItemId("oak_log");
+        int planksId = ItemRegistry.GetItemId("oak_planks");
+
+        // 1 Log in slot 1
+        player.Inventory.SetItem(1, new ItemStack(logId, 1));
+        Gameplay.CraftingManager.UpdateCraftingResult(player.Inventory);
+
+        var result = player.Inventory.GetItem(0);
+        Assert.False(result.IsEmpty);
+        Assert.Equal(planksId, result.ItemId);
+        Assert.Equal(4, result.Count);
+
+        // Consume inputs
+        Gameplay.CraftingManager.ConsumeCraftingInputs(player.Inventory);
+        Assert.True(player.Inventory.GetItem(1).IsEmpty);
+    }
 }

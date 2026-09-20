@@ -46,6 +46,7 @@ public sealed class MinecraftServer : IDisposable
         // 1. Advance the global server tick
         TickManager.AdvanceTick();
         WorldManager.Tick();
+        ConnectionManager.Tick();
         
         // 2. Schedule next tick immediately with delay simulation
         Thread.Sleep(TickManager.MillisecondsPerTick);
