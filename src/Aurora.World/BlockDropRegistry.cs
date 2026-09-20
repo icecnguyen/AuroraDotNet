@@ -21,7 +21,7 @@ public static class BlockDropRegistry
         {
             "air" or "water" or "lava" or "bedrock" or "glass" => string.Empty,
             "stone" => "cobblestone",
-            "grass_block" => "dirt",
+            "grass_block" or "podzol" or "mycelium" => "dirt",
             "coal_ore" or "deepslate_coal_ore" => "coal",
             "iron_ore" or "deepslate_iron_ore" => "raw_iron",
             "copper_ore" or "deepslate_copper_ore" => "raw_copper",

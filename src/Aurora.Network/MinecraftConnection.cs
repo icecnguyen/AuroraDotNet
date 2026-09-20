@@ -186,14 +186,14 @@ public sealed class MinecraftConnection : IDisposable
         {
             EntityId = itemEntity.EntityId,
             EntityUUID = itemEntity.Uuid,
-            Type = 72, // minecraft:item in 1.21.4
+            Type = 68, // minecraft:item in 1.21.4 (Protocol 768)
             X = itemEntity.Position.X,
             Y = itemEntity.Position.Y,
             Z = itemEntity.Position.Z,
             Pitch = 0,
             Yaw = 0,
             HeadYaw = 0,
-            Data = 1,
+            Data = 0,
             VelocityX = (short)(velocity.X * 8000),
             VelocityY = (short)(velocity.Y * 8000),
             VelocityZ = (short)(velocity.Z * 8000)
@@ -686,11 +686,11 @@ public sealed class MinecraftConnection : IDisposable
                     {
                         EntityId = item.EntityId,
                         EntityUUID = item.Uuid,
-                        Type = 72,
+                        Type = 68, // minecraft:item in 1.21.4 (Protocol 768)
                         X = item.Position.X,
                         Y = item.Position.Y,
                         Z = item.Position.Z,
-                        Data = 1
+                        Data = 0
                     });
                     SendPacket(new Aurora.Protocol.Play.SetItemEntityDataPacket
                     {

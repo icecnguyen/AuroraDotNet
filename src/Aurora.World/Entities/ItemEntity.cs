@@ -4,7 +4,7 @@ using System.Numerics;
 namespace Aurora.World.Entities;
 
 /// <summary>
-/// Represents a dropped item entity in the world (EntityType 72 in Minecraft 1.21.4).
+/// Represents a dropped item entity in the world (EntityType 68 in Minecraft 1.21.4 Protocol 768).
 /// </summary>
 public sealed class ItemEntity
 {
