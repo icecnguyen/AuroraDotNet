@@ -12,8 +12,9 @@ public sealed class TcpServer : IDisposable
     private readonly CancellationTokenSource _cts;
     private readonly ConnectionManager _connectionManager;
     private readonly Aurora.World.WorldManager _worldManager;
+    private readonly Aurora.Core.Configuration.ServerConfiguration _serverConfig;
 
-    public TcpServer(IPEndPoint endPoint, ConnectionManager connectionManager, Aurora.World.WorldManager worldManager)
+    public TcpServer(IPEndPoint endPoint, ConnectionManager connectionManager, Aurora.World.WorldManager worldManager, Aurora.Core.Configuration.ServerConfiguration? serverConfig = null)
     {
         ArgumentNullException.ThrowIfNull(endPoint);
         ArgumentNullException.ThrowIfNull(connectionManager);
@@ -21,6 +22,7 @@ public sealed class TcpServer : IDisposable
         
         _connectionManager = connectionManager;
         _worldManager = worldManager;
+        _serverConfig = serverConfig ?? new Aurora.Core.Configuration.ServerConfiguration();
         _listener = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
         _listener.Bind(endPoint);
         _cts = new CancellationTokenSource();
@@ -42,7 +44,7 @@ public sealed class TcpServer : IDisposable
                 clientSocket.NoDelay = true;
                 
                 // Construct the connection wrapping the pipeline
-                var connection = new MinecraftConnection(clientSocket, _connectionManager, _worldManager);
+                var connection = new MinecraftConnection(clientSocket, _connectionManager, _worldManager, _serverConfig);
                 
                 // Add to manager
                 _connectionManager.AddConnection(connection);

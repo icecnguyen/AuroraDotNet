@@ -15,8 +15,13 @@ public sealed class WorldManager : IDisposable
     private readonly NoiseChunkGenerator _generator;
     private readonly AnvilWorldStorage _storage;
 
-    public WorldManager(int seed = 12345, string worldDirectory = "world")
+    public long Seed { get; }
+    public long HashedSeed { get; }
+
+    public WorldManager(long seed = 12345L, string worldDirectory = "world")
     {
+        Seed = seed;
+        HashedSeed = Aurora.Core.Configuration.ServerConfiguration.HashSeed(seed);
         _generator = new NoiseChunkGenerator(seed);
         _storage = new AnvilWorldStorage(worldDirectory);
     }

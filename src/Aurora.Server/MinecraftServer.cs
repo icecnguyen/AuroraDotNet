@@ -17,19 +17,25 @@ public sealed class MinecraftServer : IDisposable
     public PlayerManager PlayerManager { get; }
     public WorldManager WorldManager { get; }
     public CommandManager CommandManager { get; }
+    public Aurora.Core.Configuration.ServerConfiguration Configuration { get; }
 
-    public MinecraftServer()
+    public MinecraftServer(Aurora.Core.Configuration.ServerConfiguration? configuration = null)
     {
+        Configuration = configuration ?? Aurora.Core.Configuration.ServerConfiguration.Load();
+
         // Setup subsystems
         TickManager = new TickManager();
         PlayerManager = new PlayerManager();
-        WorldManager = new WorldManager();
+        WorldManager = new WorldManager(Configuration.ResolvedSeed, Configuration.LevelName);
         CommandManager = new CommandManager();
         ConnectionManager = new ConnectionManager();
         
         // Setup threading and networking
-        _workerPool = new WorkerPool(4);
-        _tcpServer = new TcpServer(new IPEndPoint(IPAddress.Any, 25565), ConnectionManager, WorldManager);
+        _workerPool = new WorkerPool(Configuration.WorkerCount);
+        IPAddress bindIp = string.IsNullOrWhiteSpace(Configuration.ServerIp)
+            ? IPAddress.Any
+            : (IPAddress.TryParse(Configuration.ServerIp, out var ip) ? ip : IPAddress.Any);
+        _tcpServer = new TcpServer(new IPEndPoint(bindIp, Configuration.ServerPort), ConnectionManager, WorldManager, Configuration);
     }
 
     public void Start()

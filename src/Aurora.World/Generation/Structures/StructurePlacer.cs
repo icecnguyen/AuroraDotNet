@@ -12,7 +12,7 @@ namespace Aurora.World.Generation.Structures;
 /// </summary>
 public static class StructurePlacer
 {
-    public static void PlaceStructures(Chunk chunk, int chunkX, int chunkZ, int[] highestSolidY, BiomeType biome, int seed)
+    public static void PlaceStructures(Chunk chunk, int chunkX, int chunkZ, int[] highestSolidY, BiomeType biome, long seed)
     {
         ArgumentNullException.ThrowIfNull(chunk);
         ArgumentNullException.ThrowIfNull(highestSolidY);

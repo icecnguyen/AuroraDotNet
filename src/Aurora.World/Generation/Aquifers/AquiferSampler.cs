@@ -17,7 +17,7 @@ public sealed class AquiferSampler
     private readonly OctavePerlinNoise _fluidLevelNoise;
     private readonly OctavePerlinNoise _aquiferBarrierNoise;
 
-    public AquiferSampler(int seed)
+    public AquiferSampler(long seed)
     {
         var randomFactory = new PositionalRandomFactory(seed);
 

@@ -11,9 +11,9 @@ namespace Aurora.World.Generation.Carvers;
 /// </summary>
 public sealed class CaveCarver : WorldCarver
 {
-    private readonly int _seed;
+    private readonly long _seed;
 
-    public CaveCarver(int seed)
+    public CaveCarver(long seed)
     {
         _seed = seed;
     }

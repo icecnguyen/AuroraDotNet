@@ -19,7 +19,7 @@ public sealed class NoiseChunkGenerator
 {
     private readonly MultiNoiseBiomeSource _biomeSource;
     private readonly NoiseRouter _router;
-    private readonly int _seed;
+    private readonly long _seed;
     private readonly List<PlacedFeature> _overworldOres;
     private readonly JigsawManager _jigsawManager;
     private readonly CaveCarver _caveCarver;
@@ -36,7 +36,7 @@ public sealed class NoiseChunkGenerator
     private const int GridZ = 16 / CellSizeZ + 1; // 5
     private const int GridY = 384 / CellSizeY + 1; // 49 (-64 to 320)
 
-    public NoiseChunkGenerator(int seed)
+    public NoiseChunkGenerator(long seed)
     {
         _seed = seed;
         _biomeSource = MultiNoiseBiomeSource.CreateOverworld();
@@ -312,7 +312,7 @@ public sealed class NoiseChunkGenerator
             }
 
             // 3. Surface & Biome Layering pass
-            var random = new Random(_seed ^ (chunkX * 341873128) ^ (chunkZ * 132897987));
+            var random = new Random((int)(_seed ^ (chunkX * 341873128L) ^ (chunkZ * 132897987L)));
             BiomeType centerBiome = BiomeType.Plains;
 
             for (int x = 0; x < 16; x++)
@@ -505,7 +505,7 @@ public sealed class NoiseChunkGenerator
             }
 
             // 5. Generate features (Ores)
-            var featureRandom = new Random(_seed ^ chunkX ^ (chunkZ << 16));
+            var featureRandom = new Random((int)(_seed ^ chunkX ^ ((long)chunkZ << 16)));
             var dummyContext = new NoiseContext(0, 0, 0);
 
             foreach (var ore in _overworldOres)

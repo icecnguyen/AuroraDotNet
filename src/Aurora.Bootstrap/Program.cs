@@ -23,6 +23,9 @@ sealed class Program
 
         Console.WriteLine("Starting AuroraDotNet (1.21.4 Protocol Support)...");
 
+        var config = Aurora.Core.Configuration.ServerConfiguration.Load("server.properties");
+        Console.WriteLine($"[Config] Level: '{config.LevelName}' | Seed: {config.ResolvedSeed} (raw: '{config.LevelSeed}') | Port: {config.ServerPort} | Mode: {config.GameMode}");
+
         var builder = WebApplication.CreateBuilder(args);
         builder.Services.AddCors();
         var app = builder.Build();
@@ -32,9 +35,12 @@ sealed class Program
         app.UseStaticFiles(); // will serve wwwroot/index.html
 
         using var connectionManager = new ConnectionManager();
-        using var worldManager = new Aurora.World.WorldManager();
-        var endpoint = new IPEndPoint(IPAddress.Any, 25565);
-        using var tcpServer = new TcpServer(endpoint, connectionManager, worldManager);
+        using var worldManager = new Aurora.World.WorldManager(config.ResolvedSeed, config.LevelName);
+        IPAddress bindIp = string.IsNullOrWhiteSpace(config.ServerIp)
+            ? IPAddress.Any
+            : (IPAddress.TryParse(config.ServerIp, out var ip) ? ip : IPAddress.Any);
+        var endpoint = new IPEndPoint(bindIp, config.ServerPort);
+        using var tcpServer = new TcpServer(endpoint, connectionManager, worldManager, config);
 
 #pragma warning disable CA1031
 #pragma warning disable CA2007

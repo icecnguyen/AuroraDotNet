@@ -67,6 +67,7 @@ public sealed class MinecraftConnection : IDisposable
 
     private readonly ConnectionManager _connectionManager;
     private readonly Aurora.World.WorldManager _worldManager;
+    private readonly Aurora.Core.Configuration.ServerConfiguration _serverConfig;
 
     private static void WriteVarIntToStream(System.IO.MemoryStream ms, int value)
     {
@@ -461,12 +462,13 @@ public sealed class MinecraftConnection : IDisposable
         }
     }
 
-    public MinecraftConnection(Socket socket, ConnectionManager connectionManager, Aurora.World.WorldManager worldManager)
+    public MinecraftConnection(Socket socket, ConnectionManager connectionManager, Aurora.World.WorldManager worldManager, Aurora.Core.Configuration.ServerConfiguration? serverConfig = null)
     {
         ArgumentNullException.ThrowIfNull(socket);
         _socket = socket;
         _connectionManager = connectionManager;
         _worldManager = worldManager;
+        _serverConfig = serverConfig ?? new Aurora.Core.Configuration.ServerConfiguration();
         RemoteEndPoint = _socket.RemoteEndPoint;
 
         _receivePipe = new Pipe();
@@ -636,7 +638,7 @@ public sealed class MinecraftConnection : IDisposable
                 var protocolStr = ClientProtocolVersion > 0 ? ClientProtocolVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) : "768";
                 var res = new Aurora.Protocol.Status.StatusResponsePacket
                 {
-                    JsonResponse = "{\"version\":{\"name\":\"Aurora 1.21.4\",\"protocol\":" + protocolStr + "},\"players\":{\"max\":100,\"online\":" + onlineCount.ToString(System.Globalization.CultureInfo.InvariantCulture) + "},\"description\":{\"text\":\"§b§lAuroraDotNet §8» §fNext-Gen C# Minecraft Server\\n§7Minecraft §a1.21.4 §7• §eNative WorldGen §7• §dActive\"}}"
+                    JsonResponse = "{\"version\":{\"name\":\"Aurora 1.21.4\",\"protocol\":" + protocolStr + "},\"players\":{\"max\":" + _serverConfig.MaxPlayers.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"online\":" + onlineCount.ToString(System.Globalization.CultureInfo.InvariantCulture) + "},\"description\":{\"text\":\"" + _serverConfig.Motd + "\"}}"
                 };
                 SendPacket(res);
             }
@@ -778,7 +780,7 @@ public sealed class MinecraftConnection : IDisposable
                 CurrentState = 4; // Play
                 
                 // 1. Load player persistence or create fresh player data
-                Player = PlayerDataStorage.Load(this.Id, "world", new Aurora.Core.Ids.EntityId(this.EntityId), this.Username);
+                Player = PlayerDataStorage.Load(this.Id, _serverConfig.LevelName, new Aurora.Core.Ids.EntityId(this.EntityId), this.Username);
                 if (Player != null)
                 {
                     this.X = Player.Position.X;
@@ -798,17 +800,26 @@ public sealed class MinecraftConnection : IDisposable
                     this.X = spawn.X;
                     this.Y = spawn.Y;
                     this.Z = spawn.Z;
-                    Player = new Player(new Aurora.Core.Ids.EntityId(this.EntityId), this.Id, this.Username, GameMode.Creative);
+                    var defaultMode = _serverConfig.GameMode.Equals("creative", StringComparison.OrdinalIgnoreCase)
+                        ? GameMode.Creative
+                        : (_serverConfig.GameMode.Equals("adventure", StringComparison.OrdinalIgnoreCase)
+                            ? GameMode.Adventure
+                            : (_serverConfig.GameMode.Equals("spectator", StringComparison.OrdinalIgnoreCase)
+                                ? GameMode.Spectator
+                                : GameMode.Survival));
+                    Player = new Player(new Aurora.Core.Ids.EntityId(this.EntityId), this.Id, this.Username, defaultMode);
                     Player.Position = new System.Numerics.Vector3((float)this.X, (float)this.Y, (float)this.Z);
-                    PlayerDataStorage.Save(Player, "world");
+                    PlayerDataStorage.Save(Player, _serverConfig.LevelName);
                 }
 
                 // 2. Send Join Game with configured View Distance & Player GameMode
                 var joinGame = new Aurora.Protocol.Play.JoinGamePacket 
                 { 
                     EntityId = this.EntityId,
-                    ViewDistance = this.ViewDistance,
-                    SimulationDistance = this.ViewDistance,
+                    ViewDistance = _serverConfig.ViewDistance,
+                    SimulationDistance = _serverConfig.SimulationDistance,
+                    MaxPlayers = _serverConfig.MaxPlayers,
+                    HashedSeed = _worldManager.HashedSeed,
                     GameMode = (byte)Player.GameMode
                 };
                 SendPacket(joinGame);
@@ -1764,9 +1775,13 @@ public sealed class MinecraftConnection : IDisposable
                 response = "§cPlayer not found.";
             }
         }
+        else if (commandName.Equals("seed", StringComparison.OrdinalIgnoreCase))
+        {
+            response = $"§eSeed: [§a{_worldManager.Seed}§e]";
+        }
         else if (commandName.Equals("help", StringComparison.OrdinalIgnoreCase) || commandName.Equals("?", StringComparison.OrdinalIgnoreCase))
         {
-            response = "§6Available commands: §f/gamemode, /gm, /heal, /kill, /ping, /pos, /time, /clear, /help";
+            response = "§6Available commands: §f/gamemode, /gm, /heal, /kill, /ping, /pos, /time, /clear, /seed, /help";
         }
         else
         {
@@ -1815,7 +1830,7 @@ public sealed class MinecraftConnection : IDisposable
         }
         else
         {
-            string[] rootCommands = ["gamemode", "gm", "heal", "kill", "ping", "pos", "time", "clear", "help"];
+            string[] rootCommands = ["gamemode", "gm", "heal", "kill", "ping", "pos", "time", "clear", "seed", "help"];
             string prefix = normalized.Trim();
             foreach (var cmd in rootCommands)
             {
@@ -1909,6 +1924,7 @@ public sealed class MinecraftConnection : IDisposable
         {
             Dimension = 0,
             DimensionName = "minecraft:overworld",
+            HashedSeed = _worldManager.HashedSeed,
             GameMode = (byte)Player.GameMode,
             PreviousGameMode = 255,
             CopyMetadata = 1
@@ -1967,7 +1983,7 @@ public sealed class MinecraftConnection : IDisposable
             Player.SelectedSlot = _selectedSlot;
             try
             {
-                PlayerDataStorage.Save(Player, "world");
+                PlayerDataStorage.Save(Player, _serverConfig.LevelName);
             }
 #pragma warning disable CA1031
             catch (Exception ex)
